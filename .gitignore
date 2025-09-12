@@ -1,22 +1,16 @@
-.DS_Store
-*.pyc
-*.egg-info
-*.swp
-tags
-hrms/public/dist
-hrms/public/node_modules
-hrms/docs/current
-node_modules/
-dist/
+# Python
 __pycache__/
-
-# build/
-.vscode
-.vs
-node_modules
-*debug.log
-hrms/docs/current
-hrms/public/frontend
-hrms/www/hrms.html
-hrms/public/roster
-hrms/www/roster.html
+*.pyc
+.venv/
+# Node
+node_modules/
+# Env
+.env
+# Editor/OS
+.DS_Store
+.idea/
+.vscode/
+# Docker artifacts
+docker_mariadb-data/
+docker_redis-data/
+*.log
