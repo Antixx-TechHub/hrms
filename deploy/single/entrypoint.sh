@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ===== required env =====
+# ---- required env ----
 SITE_NAME="${SITE_NAME:-site1.local}"
 DB_HOST="${DB_HOST:?set DB_HOST}"
 DB_PORT="${DB_PORT:?set DB_PORT}"
@@ -10,26 +10,42 @@ DB_ROOT_PASSWORD="${DB_ROOT_PASSWORD:?set DB_ROOT_PASSWORD}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:?set ADMIN_PASSWORD}"
 # optional: REDIS_CACHE, REDIS_QUEUE, REDIS_SOCKETIO, PORT=8000
 
-# ===== paths =====
+# ---- paths ----
 BENCH=/home/frappe/frappe-bench
 SITES="$BENCH/sites"
 APPS="$BENCH/apps"
 SITE_PATH="$SITES/$SITE_NAME"
+PIP="$BENCH/env/bin/pip"
 
 cd "$BENCH"
 
-# ----- 1) minimal bench context so bench CLI works -----
+# 1) minimal bench context so bench CLI doesn't crash
 mkdir -p "$SITES"
-[ -f ./apps.txt ] || touch ./apps.txt
+[ -f ./apps.txt ] || : > ./apps.txt
 [ -f "$SITES/apps.txt" ] || cp ./apps.txt "$SITES/apps.txt"
-[ -f "$SITES/common_site_config.json" ] || echo '{}' > "$SITES/common_site_config.json"
 
-# ----- 2) set redis endpoints globally (safe now) -----
-[ -n "${REDIS_CACHE:-}" ]    && bench set-config -g redis_cache "$REDIS_CACHE"
-[ -n "${REDIS_QUEUE:-}" ]    && bench set-config -g redis_queue "$REDIS_QUEUE"
-[ -n "${REDIS_SOCKETIO:-}" ] && bench set-config -g redis_socketio "$REDIS_SOCKETIO"
+# 2) create global config JSON (preferred over bench set-config here)
+if [ -n "${REDIS_CACHE:-}" ] || [ -n "${REDIS_QUEUE:-}" ] || [ -n "${REDIS_SOCKETIO:-}" ]; then
+  jq -n \
+    --arg cache "${REDIS_CACHE:-}" \
+    --arg queue "${REDIS_QUEUE:-}" \
+    --arg sio   "${REDIS_SOCKETIO:-}" \
+    '{
+      ( $cache | length > 0 ) as $c |
+      ( $queue | length > 0 ) as $q |
+      ( $sio   | length > 0 ) as $s
+    }
+    |
+    if $c then .redis_cache=$cache else . end
+    |
+    if $q then .redis_queue=$queue else . end
+    |
+    if $s then .redis_socketio=$sio else . end' > "$SITES/common_site_config.json"
+else
+  [ -f "$SITES/common_site_config.json" ] || echo '{}' > "$SITES/common_site_config.json"
+fi
 
-# ----- 3) fetch apps via git (no bench get-app) -----
+# 3) fetch apps via git (avoid 'bench get-app')
 if [ ! -d "$APPS/erpnext" ]; then
   git clone --depth 1 -b version-15 https://github.com/frappe/erpnext "$APPS/erpnext"
 fi
@@ -37,11 +53,15 @@ if [ ! -d "$APPS/hrms" ]; then
   git clone --depth 1 -b version-15 https://github.com/frappe/hrms "$APPS/hrms"
 fi
 
-# ensure python/node deps and assets
-bench setup requirements
-bench build --apps erpnext hrms
+# 4) python deps for apps (replace missing 'bench setup requirements')
+# ignore if a requirements file is absent
+[ -f "$APPS/erpnext/requirements.txt" ] && "$PIP" install -q -r "$APPS/erpnext/requirements.txt" || true
+[ -f "$APPS/hrms/requirements.txt" ]    && "$PIP" install -q -r "$APPS/hrms/requirements.txt" || true
 
-# ----- 4) create site (once) and install apps -----
+# 5) build assets for these apps
+bench build --apps erpnext hrms || true
+
+# 6) create site if missing, then install apps
 if [ ! -f "$SITE_PATH/site_config.json" ]; then
   bench new-site "$SITE_NAME" \
     --mariadb-root-password "$DB_ROOT_PASSWORD" \
@@ -52,9 +72,8 @@ if [ ! -f "$SITE_PATH/site_config.json" ]; then
   bench --site "$SITE_NAME" install-app erpnext
   bench --site "$SITE_NAME" install-app hrms
 
-  # build again to be safe after install
-  bench build
+  bench build || true
 fi
 
-# ----- 5) run dev server (python on 8000). set PORT=8000 in Railway -----
+# 7) start dev stack (listen on 8000)
 exec bench start
