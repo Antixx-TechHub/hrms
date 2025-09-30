@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ---- required env ----
+# required env
 : "${SITE_NAME:?SITE_NAME not set}"
 : "${ADMIN_PASSWORD:?ADMIN_PASSWORD not set}"
 : "${DB_HOST:?DB_HOST not set}"
@@ -21,35 +21,42 @@ GUNICORN="$VENV/bin/gunicorn"
 
 cd "$BENCH"
 
-# ---- bench context ----
+# bench context
 mkdir -p "$SITES"
 [ -f ./apps.txt ] || : > ./apps.txt
 [ -f "$SITES/apps.txt" ] || cp ./apps.txt "$SITES/apps.txt"
 [ -f "$SITES/common_site_config.json" ] || echo '{}' > "$SITES/common_site_config.json"
 
-# ---- start local redis and wire Frappe to it (mandatory for migrate) ----
-if command -v redis-server >/dev/null 2>&1; then
-  # start in background
-  redis-server /etc/redis/redis.conf --daemonize yes
-  # write host:port endpoints expected by Frappe v15
-  cat > "$SITES/common_site_config.json" <<EOF
+# start local redis (no root paths, no config file)
+mkdir -p /home/frappe/redis
+if pgrep -x redis-server >/dev/null 2>&1; then
+  echo "redis already running"
+else
+  redis-server --daemonize yes \
+    --bind 127.0.0.1 --port 6379 \
+    --save "" --appendonly no \
+    --dir /home/frappe/redis \
+    --pidfile /home/frappe/redis/redis.pid
+fi
+
+# wire frappe to local redis
+cat > "$SITES/common_site_config.json" <<EOF
 {
   "redis_cache": "127.0.0.1:6379",
   "redis_queue": "127.0.0.1:6379",
   "redis_socketio": "127.0.0.1:6379"
 }
 EOF
-fi
 
-# ---- apps ----
+# apps
 [ -d "$APPS/erpnext" ] || git clone --depth 1 -b version-15 https://github.com/frappe/erpnext "$APPS/erpnext"
 [ -d "$APPS/hrms" ]    || git clone --depth 1 -b version-15 https://github.com/frappe/hrms    "$APPS/hrms"
 
-# ---- python deps (best effort) ----
+# deps
 [ -f "$APPS/erpnext/requirements.txt" ] && "$PIP" install -q -r "$APPS/erpnext/requirements.txt" || true
 [ -f "$APPS/hrms/requirements.txt" ]    && "$PIP" install -q -r "$APPS/hrms/requirements.txt"    || true
 
-# ---- initial site (bypass MariaDB collation guard via service env SKIP_MARIADB_SAFEGUARDS=1) ----
+# site init / migrate
 if [ ! -f "$SITE_PATH/site_config.json" ]; then
   echo ">>> Initializing site $SITE_NAME with DB $DB_NAME"
   bench new-site "$SITE_NAME" \
@@ -69,7 +76,7 @@ else
   bench build || true
 fi
 
-# ---- serve HTTP ----
+# serve HTTP
 export FRAPPE_SITE="$SITE_NAME"
 exec "$GUNICORN" \
   -b 0.0.0.0:"$PORT" -w 2 -k gevent --timeout 120 \
