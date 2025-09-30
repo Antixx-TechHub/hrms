@@ -28,26 +28,19 @@ mkdir -p "$SITES"
 [ -f "$SITES/common_site_config.json" ] || echo '{}' > "$SITES/common_site_config.json"
 echo "$SITE_NAME" > "$SITES/currentsite.txt"
 
-# optional public host name
-if [ -n "${RAILWAY_PUBLIC_DOMAIN:-}" ]; then
-  bench --site "$SITE_NAME" set-config host_name "$RAILWAY_PUBLIC_DOMAIN" || true
-fi
-
-# ===== start local redis (no /etc/redis/redis.conf) =====
+# ===== start local redis =====
 mkdir -p /home/frappe/redis
-if pgrep -x redis-server >/dev/null 2>&1; then
-  echo "redis already running"
-else
+if ! pgrep -x redis-server >/dev/null 2>&1; then
   redis-server \
     --bind 127.0.0.1 --port 6379 \
     --save "" --appendonly no \
     --dir /home/frappe/redis \
     --pidfile /home/frappe/redis/redis.pid \
     --daemonize yes \
-    ""   # empty arg prevents loading /etc/redis/redis.conf
+    ""
 fi
 
-# wire frappe to local redis (Frappe v15 expects host:port)
+# wire frappe to redis
 cat > "$SITES/common_site_config.json" <<EOF
 {
   "redis_cache": "127.0.0.1:6379",
@@ -60,7 +53,7 @@ EOF
 [ -d "$APPS/erpnext" ] || git clone --depth 1 -b version-15 https://github.com/frappe/erpnext "$APPS/erpnext"
 [ -d "$APPS/hrms" ]    || git clone --depth 1 -b version-15 https://github.com/frappe/hrms    "$APPS/hrms"
 
-# ===== deps (best effort) =====
+# ===== deps =====
 [ -f "$APPS/erpnext/requirements.txt" ] && "$PIP" install -q -r "$APPS/erpnext/requirements.txt" || true
 [ -f "$APPS/hrms/requirements.txt" ]    && "$PIP" install -q -r "$APPS/hrms/requirements.txt"    || true
 
@@ -82,6 +75,12 @@ else
   echo ">>> Site exists. Running migrate + build."
   bench --site "$SITE_NAME" migrate
   bench build || true
+fi
+
+# ===== domain binding =====
+if [ -n "${RAILWAY_PUBLIC_DOMAIN:-}" ]; then
+  echo ">>> Setting host_name to $RAILWAY_PUBLIC_DOMAIN"
+  bench --site "$SITE_NAME" set-config host_name "https://${RAILWAY_PUBLIC_DOMAIN}" || true
 fi
 
 # ===== serve HTTP =====
