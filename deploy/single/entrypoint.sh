@@ -37,7 +37,7 @@ else
     --save "" --appendonly no \
     --dir /home/frappe/redis \
     --pidfile /home/frappe/redis/redis.pid \
-    --daemonize yes \
+    # --daemonize yes \
     ""   # <- empty arg prevents loading /etc/redis/redis.conf
 fi
 
