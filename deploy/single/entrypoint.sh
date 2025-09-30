@@ -27,19 +27,21 @@ mkdir -p "$SITES"
 [ -f "$SITES/apps.txt" ] || cp ./apps.txt "$SITES/apps.txt"
 [ -f "$SITES/common_site_config.json" ] || echo '{}' > "$SITES/common_site_config.json"
 
-# start local redis (no root paths, no config file)
+# start local redis (force NO config file to avoid /etc/redis/redis.conf)
 mkdir -p /home/frappe/redis
 if pgrep -x redis-server >/dev/null 2>&1; then
   echo "redis already running"
 else
-  redis-server --daemonize yes \
+  redis-server \
     --bind 127.0.0.1 --port 6379 \
     --save "" --appendonly no \
     --dir /home/frappe/redis \
-    --pidfile /home/frappe/redis/redis.pid
+    --pidfile /home/frappe/redis/redis.pid \
+    --daemonize yes \
+    ""   # <- empty arg prevents loading /etc/redis/redis.conf
 fi
 
-# wire frappe to local redis
+# wire frappe to local redis (Frappe v15 expects host:port)
 cat > "$SITES/common_site_config.json" <<EOF
 {
   "redis_cache": "127.0.0.1:6379",
