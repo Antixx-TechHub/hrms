@@ -27,35 +27,10 @@ mkdir -p "$SITES"
 [ -f "$SITES/apps.txt" ] || cp ./apps.txt "$SITES/apps.txt"
 [ -f "$SITES/common_site_config.json" ] || echo '{}' > "$SITES/common_site_config.json"
 
-# ---- redis endpoints -> normalize to host:port (Frappe expects this) ----
-normalize_redis() {
-  local url="${1:-}"
-  [ -z "$url" ] && return 0
-  url="${url#redis://}"     # drop scheme
-  url="${url#*@}"           # drop creds
-  url="${url%%/*}"          # drop /db
-  echo "$url"
-}
-
-if [ -n "${REDIS_CACHE:-}" ] || [ -n "${REDIS_QUEUE:-}" ] || [ -n "${REDIS_SOCKETIO:-}" ]; then
-  tmp="$SITES/common_site_config.json.tmp"
-  {
-    echo "{"
-    first=1
-    if [ -n "${REDIS_CACHE:-}" ]; then
-      echo "  \"redis_cache\": \"$(normalize_redis "$REDIS_CACHE")\""; first=0
-    fi
-    if [ -n "${REDIS_QUEUE:-}" ]; then
-      [ $first -eq 0 ] && echo ","
-      echo "  \"redis_queue\": \"$(normalize_redis "$REDIS_QUEUE")\""; first=0
-    fi
-    if [ -n "${REDIS_SOCKETIO:-}" ]; then
-      [ $first -eq 0 ] && echo ","
-      echo "  \"redis_socketio\": \"$(normalize_redis "$REDIS_SOCKETIO")\""
-    fi
-    echo "}"
-  } > "$tmp"
-  mv "$tmp" "$SITES/common_site_config.json"
+# ---- FORCE: strip any redis settings if present ----
+if grep -q '"redis_' "$SITES/common_site_config.json" 2>/dev/null || true; then
+  # keep only a minimal JSON object
+  echo '{}' > "$SITES/common_site_config.json"
 fi
 
 # ---- apps ----
@@ -66,7 +41,7 @@ fi
 [ -f "$APPS/erpnext/requirements.txt" ] && "$PIP" install -q -r "$APPS/erpnext/requirements.txt" || true
 [ -f "$APPS/hrms/requirements.txt" ]    && "$PIP" install -q -r "$APPS/hrms/requirements.txt"    || true
 
-# ---- first run: create site against existing DB (skip collation guard via env on service: SKIP_MARIADB_SAFEGUARDS=1) ----
+# ---- initial site (use existing DB). Add SKIP_MARIADB_SAFEGUARDS=1 env in service to bypass collation check ----
 if [ ! -f "$SITE_PATH/site_config.json" ]; then
   echo ">>> Initializing site $SITE_NAME with DB $DB_NAME"
   bench new-site "$SITE_NAME" \
@@ -86,6 +61,7 @@ else
   bench build || true
 fi
 
+# ---- serve HTTP ----
 export FRAPPE_SITE="$SITE_NAME"
 exec "$GUNICORN" \
   -b 0.0.0.0:"$PORT" -w 2 -k gevent --timeout 120 \
