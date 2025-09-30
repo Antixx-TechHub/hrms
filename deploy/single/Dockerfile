@@ -1,9 +1,8 @@
-# ERPNext v15 base with Python 3.10 (not edge)
-FROM frappe/erpnext-worker:v15
+# ERPNext v15 base with Python 3.10
+FROM frappe/bench:version-15
 
 WORKDIR /home/frappe/frappe-bench
 
-# Minimal OS deps for build/runtime
 USER root
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -11,6 +10,5 @@ RUN apt-get update && \
     npm install -g yarn && \
     rm -rf /var/lib/apt/lists/*
 
-# Entrypoint
 COPY --chmod=0755 entrypoint.sh /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
