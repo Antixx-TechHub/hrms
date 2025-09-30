@@ -9,7 +9,7 @@ USER frappe
 WORKDIR /home/frappe/frappe-bench
 
 # Copy app list
-COPY ../apps.json /tmp/apps.json
+COPY /apps.json /tmp/apps.json
 
 # Sanity
 RUN bench version
@@ -24,7 +24,5 @@ RUN bench setup requirements && bench build --apps erpnext hrms
 # ---------- end common base ----------
 
 
-ARG FRAPPE_PATH
-ARG FRAPPE_BRANCH
 FROM base
 CMD ["bash","-lc","bench schedule"]
