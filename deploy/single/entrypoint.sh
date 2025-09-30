@@ -27,10 +27,18 @@ mkdir -p "$SITES"
 [ -f "$SITES/apps.txt" ] || cp ./apps.txt "$SITES/apps.txt"
 [ -f "$SITES/common_site_config.json" ] || echo '{}' > "$SITES/common_site_config.json"
 
-# ---- FORCE: strip any redis settings if present ----
-if grep -q '"redis_' "$SITES/common_site_config.json" 2>/dev/null || true; then
-  # keep only a minimal JSON object
-  echo '{}' > "$SITES/common_site_config.json"
+# ---- start local redis and wire Frappe to it (mandatory for migrate) ----
+if command -v redis-server >/dev/null 2>&1; then
+  # start in background
+  redis-server /etc/redis/redis.conf --daemonize yes
+  # write host:port endpoints expected by Frappe v15
+  cat > "$SITES/common_site_config.json" <<EOF
+{
+  "redis_cache": "127.0.0.1:6379",
+  "redis_queue": "127.0.0.1:6379",
+  "redis_socketio": "127.0.0.1:6379"
+}
+EOF
 fi
 
 # ---- apps ----
@@ -41,7 +49,7 @@ fi
 [ -f "$APPS/erpnext/requirements.txt" ] && "$PIP" install -q -r "$APPS/erpnext/requirements.txt" || true
 [ -f "$APPS/hrms/requirements.txt" ]    && "$PIP" install -q -r "$APPS/hrms/requirements.txt"    || true
 
-# ---- initial site (use existing DB). Add SKIP_MARIADB_SAFEGUARDS=1 env in service to bypass collation check ----
+# ---- initial site (bypass MariaDB collation guard via service env SKIP_MARIADB_SAFEGUARDS=1) ----
 if [ ! -f "$SITE_PATH/site_config.json" ]; then
   echo ">>> Initializing site $SITE_NAME with DB $DB_NAME"
   bench new-site "$SITE_NAME" \
