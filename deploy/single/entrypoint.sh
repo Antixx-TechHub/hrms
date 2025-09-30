@@ -86,7 +86,6 @@ else
   bench build || true
 fi
 
-# ---- serve HTTP ----
 export FRAPPE_SITE="$SITE_NAME"
 exec "$GUNICORN" \
   -b 0.0.0.0:"$PORT" -w 2 -k gevent --timeout 120 \
