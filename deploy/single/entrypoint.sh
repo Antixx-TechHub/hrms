@@ -6,9 +6,9 @@ set -euo pipefail
 : "${ADMIN_PASSWORD:?ADMIN_PASSWORD not set}"
 : "${DB_HOST:?DB_HOST not set}"
 : "${DB_PORT:?DB_PORT not set}"
-: "${DB_ROOT_USER:?DB_ROOT_USER not set}"
-: "${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD not set}"
 : "${DB_NAME:?DB_NAME not set}"
+: "${DB_USER:?DB_USER not set}"
+: "${DB_PASSWORD:?DB_PASSWORD not set}"
 : "${PORT:?PORT not set}"
 
 BENCH=/home/frappe/frappe-bench
@@ -21,13 +21,13 @@ GUNICORN="$VENV/bin/gunicorn"
 
 cd "$BENCH"
 
-# bench context
-mkdir -p "$SITES" /home/frappe/redis
+# ensure bench context
+mkdir -p "$SITES" /home/frappe/redis "$SITE_PATH"
 [ -f ./apps.txt ] || : > ./apps.txt
 [ -f "$SITES/apps.txt" ] || cp ./apps.txt "$SITES/apps.txt"
 echo "$SITE_NAME" > "$SITES/currentsite.txt"
 
-# local redis
+# minimal local redis (no root paths)
 REDIS_CFG=/home/frappe/redis/redis.conf
 cat > "$REDIS_CFG" <<'EOF'
 bind 127.0.0.1
@@ -41,7 +41,7 @@ daemonize yes
 EOF
 pgrep -x redis-server >/dev/null 2>&1 || redis-server "$REDIS_CFG"
 
-# *** CRITICAL: tell Frappe where DB and Redis live ***
+# common site config (DB host/port + proper redis URL scheme)
 cat > "$SITES/common_site_config.json" <<EOF
 {
   "db_host": "$DB_HOST",
@@ -52,61 +52,50 @@ cat > "$SITES/common_site_config.json" <<EOF
 }
 EOF
 
-# apps
+# clone apps if missing
 [ -d "$APPS/erpnext" ] || git clone --depth 1 -b version-15 https://github.com/frappe/erpnext "$APPS/erpnext"
 [ -d "$APPS/hrms" ]    || git clone --depth 1 -b version-15 https://github.com/frappe/hrms    "$APPS/hrms"
 
-# deps (best effort)
+# install python deps (best effort)
 [ -f "$APPS/erpnext/requirements.txt" ] && "$PIP" install -q -r "$APPS/erpnext/requirements.txt" || true
 [ -f "$APPS/hrms/requirements.txt" ]    && "$PIP" install -q -r "$APPS/hrms/requirements.txt"    || true
 
-# try to create site (ignore "already exists")
-if [ ! -f "$SITE_PATH/site_config.json" ]; then
-  echo ">>> Initializing site $SITE_NAME with DB $DB_NAME"
-  set +e
-  bench new-site "$SITE_NAME" \
-    --db-name "$DB_NAME" \
-    --db-host "$DB_HOST" --db-port "$DB_PORT" \
-    --db-root-username "$DB_ROOT_USER" \
-    --mariadb-root-password "$DB_ROOT_PASSWORD" \
-    --no-mariadb-socket \
-    --admin-password "$ADMIN_PASSWORD" \
-    --force
-  NEW_SITE_RC=$?
-  set -e
-  if [ $NEW_SITE_RC -ne 0 ]; then
-    echo "new-site returned $NEW_SITE_RC; continuing (DB may already exist)."
-  fi
+# write/merge site_config.json with Railway DB creds and host mapping
+"$VENV/bin/python" - <<'PY' || true
+import json, os
+site = os.environ["SITE_NAME"]
+site_path = f"/home/frappe/frappe-bench/sites/{site}"
+cfg_path  = f"{site_path}/site_config.json"
+data = {}
+if os.path.exists(cfg_path):
+    try:
+        with open(cfg_path) as f: data = json.load(f)
+    except Exception: data = {}
+e=os.environ
+data.update({
+  "db_type": "mariadb",
+  "db_name": e["DB_NAME"],
+  "db_user": e["DB_USER"],
+  "db_password": e["DB_PASSWORD"],
+  "db_host": e["DB_HOST"],
+  "db_port": e["DB_PORT"]
+})
+domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+if domain:
+    if not domain.startswith("http"): domain = "https://" + domain
+    data["host_name"] = domain
+os.makedirs(site_path, exist_ok=True)
+with open(cfg_path, "w") as f: json.dump(data, f, indent=2)
+PY
 
-  # install apps if site exists now
-  if [ -f "$SITE_PATH/site_config.json" ]; then
-    bench --site "$SITE_NAME" install-app erpnext || true
-    bench --site "$SITE_NAME" install-app hrms    || true
-  fi
-else
-  echo ">>> Site exists."
-fi
-
-# ensure global db host/port are also set via bench (redundant but safe)
-bench --site "$SITE_NAME" set-config -g db_host "$DB_HOST" || true
-bench --site "$SITE_NAME" set-config -g db_port "$DB_PORT" || true
-
-# migrate + build (don’t hard-fail the container if migrate returns non-zero; gunicorn can still serve)
+# migrate if possible; OK if it fails on first boot (schema not present)
 set +e
 bench --site "$SITE_NAME" migrate
-MIGRATE_RC=$?
+bench --site "$SITE_NAME" install-app erpnext
+bench --site "$SITE_NAME" install-app hrms
 set -e
-if [ $MIGRATE_RC -ne 0 ]; then
-  echo ">>> migrate failed with $MIGRATE_RC; check DB creds/privileges and that DB is reachable."
-fi
-bench build || true
 
-# external domain binding
-if [ -n "${RAILWAY_PUBLIC_DOMAIN:-}" ]; then
-  bench --site "$SITE_NAME" set-config host_name "https://${RAILWAY_PUBLIC_DOMAIN}" || true
-fi
-
-# serve HTTP
+# serve
 export FRAPPE_SITE="$SITE_NAME"
 exec "$GUNICORN" \
   -b 0.0.0.0:"$PORT" -w 2 -k gevent --timeout 120 \
