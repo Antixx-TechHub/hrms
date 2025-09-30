@@ -25,10 +25,9 @@ cd "$BENCH"
 mkdir -p "$SITES" /home/frappe/redis
 [ -f ./apps.txt ] || : > ./apps.txt
 [ -f "$SITES/apps.txt" ] || cp ./apps.txt "$SITES/apps.txt"
-[ -f "$SITES/common_site_config.json" ] || echo '{}' > "$SITES/common_site_config.json"
 echo "$SITE_NAME" > "$SITES/currentsite.txt"
 
-# local redis via user config
+# local redis
 REDIS_CFG=/home/frappe/redis/redis.conf
 cat > "$REDIS_CFG" <<'EOF'
 bind 127.0.0.1
@@ -42,9 +41,11 @@ daemonize yes
 EOF
 pgrep -x redis-server >/dev/null 2>&1 || redis-server "$REDIS_CFG"
 
-# write redis URLs with scheme (required by Frappe/redis-py)
+# *** CRITICAL: tell Frappe where DB and Redis live ***
 cat > "$SITES/common_site_config.json" <<EOF
 {
+  "db_host": "$DB_HOST",
+  "db_port": "$DB_PORT",
   "redis_cache": "redis://127.0.0.1:6379",
   "redis_queue": "redis://127.0.0.1:6379",
   "redis_socketio": "redis://127.0.0.1:6379"
@@ -59,9 +60,10 @@ EOF
 [ -f "$APPS/erpnext/requirements.txt" ] && "$PIP" install -q -r "$APPS/erpnext/requirements.txt" || true
 [ -f "$APPS/hrms/requirements.txt" ]    && "$PIP" install -q -r "$APPS/hrms/requirements.txt"    || true
 
-# site init / migrate
+# try to create site (ignore "already exists")
 if [ ! -f "$SITE_PATH/site_config.json" ]; then
   echo ">>> Initializing site $SITE_NAME with DB $DB_NAME"
+  set +e
   bench new-site "$SITE_NAME" \
     --db-name "$DB_NAME" \
     --db-host "$DB_HOST" --db-port "$DB_PORT" \
@@ -70,14 +72,34 @@ if [ ! -f "$SITE_PATH/site_config.json" ]; then
     --no-mariadb-socket \
     --admin-password "$ADMIN_PASSWORD" \
     --force
+  NEW_SITE_RC=$?
+  set -e
+  if [ $NEW_SITE_RC -ne 0 ]; then
+    echo "new-site returned $NEW_SITE_RC; continuing (DB may already exist)."
+  fi
 
-  bench --site "$SITE_NAME" install-app erpnext
-  bench --site "$SITE_NAME" install-app hrms
+  # install apps if site exists now
+  if [ -f "$SITE_PATH/site_config.json" ]; then
+    bench --site "$SITE_NAME" install-app erpnext || true
+    bench --site "$SITE_NAME" install-app hrms    || true
+  fi
 else
-  echo ">>> Site exists. Running migrate + build."
-  bench --site "$SITE_NAME" migrate
-  bench build || true
+  echo ">>> Site exists."
 fi
+
+# ensure global db host/port are also set via bench (redundant but safe)
+bench --site "$SITE_NAME" set-config -g db_host "$DB_HOST" || true
+bench --site "$SITE_NAME" set-config -g db_port "$DB_PORT" || true
+
+# migrate + build (don’t hard-fail the container if migrate returns non-zero; gunicorn can still serve)
+set +e
+bench --site "$SITE_NAME" migrate
+MIGRATE_RC=$?
+set -e
+if [ $MIGRATE_RC -ne 0 ]; then
+  echo ">>> migrate failed with $MIGRATE_RC; check DB creds/privileges and that DB is reachable."
+fi
+bench build || true
 
 # external domain binding
 if [ -n "${RAILWAY_PUBLIC_DOMAIN:-}" ]; then
