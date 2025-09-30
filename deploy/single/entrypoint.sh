@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ===== required env =====
+# required env
 : "${SITE_NAME:?SITE_NAME not set}"
 : "${ADMIN_PASSWORD:?ADMIN_PASSWORD not set}"
 : "${DB_HOST:?DB_HOST not set}"
@@ -21,15 +21,14 @@ GUNICORN="$VENV/bin/gunicorn"
 
 cd "$BENCH"
 
-# ===== bench context =====
-mkdir -p "$SITES"
+# bench context
+mkdir -p "$SITES" /home/frappe/redis
 [ -f ./apps.txt ] || : > ./apps.txt
 [ -f "$SITES/apps.txt" ] || cp ./apps.txt "$SITES/apps.txt"
 [ -f "$SITES/common_site_config.json" ] || echo '{}' > "$SITES/common_site_config.json"
 echo "$SITE_NAME" > "$SITES/currentsite.txt"
 
-# ===== local redis via user-writable config file (avoid /etc/redis/redis.conf) =====
-mkdir -p /home/frappe/redis
+# local redis via user config
 REDIS_CFG=/home/frappe/redis/redis.conf
 cat > "$REDIS_CFG" <<'EOF'
 bind 127.0.0.1
@@ -41,29 +40,26 @@ dir /home/frappe/redis
 pidfile /home/frappe/redis/redis.pid
 daemonize yes
 EOF
+pgrep -x redis-server >/dev/null 2>&1 || redis-server "$REDIS_CFG"
 
-if ! pgrep -x redis-server >/dev/null 2>&1; then
-  redis-server "$REDIS_CFG"
-fi
-
-# wire frappe to local redis (Frappe v15 expects host:port)
+# write redis URLs with scheme (required by Frappe/redis-py)
 cat > "$SITES/common_site_config.json" <<EOF
 {
-  "redis_cache": "127.0.0.1:6379",
-  "redis_queue": "127.0.0.1:6379",
-  "redis_socketio": "127.0.0.1:6379"
+  "redis_cache": "redis://127.0.0.1:6379",
+  "redis_queue": "redis://127.0.0.1:6379",
+  "redis_socketio": "redis://127.0.0.1:6379"
 }
 EOF
 
-# ===== apps =====
+# apps
 [ -d "$APPS/erpnext" ] || git clone --depth 1 -b version-15 https://github.com/frappe/erpnext "$APPS/erpnext"
 [ -d "$APPS/hrms" ]    || git clone --depth 1 -b version-15 https://github.com/frappe/hrms    "$APPS/hrms"
 
-# ===== deps =====
+# deps (best effort)
 [ -f "$APPS/erpnext/requirements.txt" ] && "$PIP" install -q -r "$APPS/erpnext/requirements.txt" || true
 [ -f "$APPS/hrms/requirements.txt" ]    && "$PIP" install -q -r "$APPS/hrms/requirements.txt"    || true
 
-# ===== site init / migrate =====
+# site init / migrate
 if [ ! -f "$SITE_PATH/site_config.json" ]; then
   echo ">>> Initializing site $SITE_NAME with DB $DB_NAME"
   bench new-site "$SITE_NAME" \
@@ -77,22 +73,18 @@ if [ ! -f "$SITE_PATH/site_config.json" ]; then
 
   bench --site "$SITE_NAME" install-app erpnext
   bench --site "$SITE_NAME" install-app hrms
-
-  # set external host if provided
-  if [ -n "${RAILWAY_PUBLIC_DOMAIN:-}" ]; then
-    bench --site "$SITE_NAME" set-config host_name "https://${RAILWAY_PUBLIC_DOMAIN}" || true
-  fi
 else
   echo ">>> Site exists. Running migrate + build."
   bench --site "$SITE_NAME" migrate
   bench build || true
-
-  if [ -n "${RAILWAY_PUBLIC_DOMAIN:-}" ]; then
-    bench --site "$SITE_NAME" set-config host_name "https://${RAILWAY_PUBLIC_DOMAIN}" || true
-  fi
 fi
 
-# ===== serve HTTP =====
+# external domain binding
+if [ -n "${RAILWAY_PUBLIC_DOMAIN:-}" ]; then
+  bench --site "$SITE_NAME" set-config host_name "https://${RAILWAY_PUBLIC_DOMAIN}" || true
+fi
+
+# serve HTTP
 export FRAPPE_SITE="$SITE_NAME"
 exec "$GUNICORN" \
   -b 0.0.0.0:"$PORT" -w 2 -k gevent --timeout 120 \
