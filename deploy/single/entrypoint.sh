@@ -5,10 +5,8 @@ cd /home/frappe/frappe-bench
 SITES=/home/frappe/frappe-bench/sites
 SITE_PATH="$SITES/${SITE_NAME:-site1.local}"
 
-# ensure sites dir exists on mounted volume
 mkdir -p "$SITES"
 
-# create site if missing
 if [ ! -f "$SITE_PATH/site_config.json" ]; then
   bench new-site "${SITE_NAME:-site1.local}" \
     --mariadb-root-password "$DB_ROOT_PASSWORD" \
@@ -19,5 +17,4 @@ if [ ! -f "$SITE_PATH/site_config.json" ]; then
   bench build
 fi
 
-# start dev server (single container). listens on 8000
 exec bench start
