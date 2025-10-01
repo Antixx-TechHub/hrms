@@ -11,11 +11,7 @@ set -euo pipefail
 : "${DB_NAME:?DB_NAME not set}"
 : "${PORT:?PORT not set}"
 
-# ---------- OPTIONAL ----------
-PUBLIC_URL="${PUBLIC_URL:-}"   # e.g. https://<your-app>.up.railway.app
-REDIS_CACHE="${REDIS_CACHE:-}"       # e.g. redis://:pwd@redis.railway.internal:6379/0
-REDIS_QUEUE="${REDIS_QUEUE:-}"
-REDIS_SOCKETIO="${REDIS_SOCKETIO:-}"
+PUBLIC_URL="${PUBLIC_URL:-}"
 
 BENCH=/home/frappe/frappe-bench
 APPS="$BENCH/apps"
@@ -26,58 +22,27 @@ GUNICORN="$VENV/bin/gunicorn"
 
 cd "$BENCH"
 
-# ---------- tiny helpers ----------
-wait_for_db() {
-  echo "Waiting for MariaDB ${DB_HOST}:${DB_PORT} ..."
+# ---------- helpers ----------
+wait_for_tcp() {
+  local host=$1 port=$2 label=$3
+  echo "Waiting for $label $host:$port ..."
   for i in {1..60}; do
-    if mysqladmin --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u"$DB_ROOT_USER" -p"$DB_ROOT_PASSWORD" ping >/dev/null 2>&1; then
-      echo "MariaDB is reachable."
+    if nc -z "$host" "$port" >/dev/null 2>&1; then
+      echo "$label is reachable."
       return 0
     fi
     sleep 1
   done
-  echo "ERROR: MariaDB not reachable after 60s."
+  echo "WARN: $label not reachable after 60s."
   return 1
 }
 
-wait_for_redis() {
-  local url="$1" label="$2"
-  # Expect formats redis://host:port/db or redis://:pwd@host:port/db
-  local host port
-  host="$(python - <<'PY' "$url"
-import os,sys,urllib.parse
-u=urllib.parse.urlparse(os.environ["url"])
-print(u.hostname or "")
-PY
-)"
-  port="$(python - <<'PY' "$url"
-import os,sys,urllib.parse
-u=urllib.parse.urlparse(os.environ["url"])
-print(u.port or 6379)
-PY
-)"
-  echo "Waiting for ${label} ${host}:${port} ..."
-  for i in {1..60}; do
-    if (echo PING | timeout 1 bash -c "cat < /dev/tcp/${host}/${port}" >/dev/null 2>&1); then
-      echo "${label} is reachable."
-      return 0
-    fi
-    sleep 1
-  done
-  echo "WARN: ${label} not reachable after 60s; continuing."
-  return 0
+wait_for_db() {
+  wait_for_tcp "$DB_HOST" "$DB_PORT" "MariaDB"
 }
 
-# ---------- bench context ----------
-mkdir -p "$SITES"
-[ -f ./apps.txt ] || : > ./apps.txt
-[ -f "$SITES/apps.txt" ] || cp ./apps.txt "$SITES/apps.txt"
-[ -f "$SITES/common_site_config.json" ] || echo '{}' > "$SITES/common_site_config.json"
-
-# ---------- Redis: use Railway if provided; else start local ----------
-if [[ -n "$REDIS_CACHE" && "$REDIS_CACHE" == redis://* ]]; then
-  echo "Using provided Redis URLs from env."
-else
+# ---------- Redis: start local unless provided ----------
+if [[ -z "${REDIS_CACHE:-}" ]]; then
   echo "Starting local Redis on 127.0.0.1:6379 ..."
   mkdir -p /home/frappe/redis
   if ! pgrep -x redis-server >/dev/null 2>&1; then
@@ -90,39 +55,38 @@ else
   REDIS_CACHE="redis://127.0.0.1:6379/0"
   REDIS_QUEUE="redis://127.0.0.1:6379/1"
   REDIS_SOCKETIO="redis://127.0.0.1:6379/2"
+else
+  # if Railway gives you Redis, export all 3 roles to the same URL
+  REDIS_QUEUE="$REDIS_CACHE"
+  REDIS_SOCKETIO="$REDIS_CACHE"
 fi
 
-# ---------- persist common config (redis/proxy) ----------
-python - <<PY
-import json, os
-p = "$SITES/common_site_config.json"
-try:
-  with open(p) as f: cfg=json.load(f)
-except Exception: cfg={}
-cfg.update({
-  "redis_cache": os.environ.get("REDIS_CACHE",""),
-  "redis_queue": os.environ.get("REDIS_QUEUE",""),
-  "redis_socketio": os.environ.get("REDIS_SOCKETIO",""),
-  "restart_supervisor_on_update": False,
-  "auto_update": False
-})
-with open(p,"w") as f: json.dump(cfg, f, indent=2)
-print("Wrote common_site_config.json")
-PY
+# ---------- common config ----------
+mkdir -p "$SITES"
+cat > "$SITES/common_site_config.json" <<EOF
+{
+  "redis_cache": "$REDIS_CACHE",
+  "redis_queue": "$REDIS_QUEUE",
+  "redis_socketio": "$REDIS_SOCKETIO",
+  "restart_supervisor_on_update": false,
+  "auto_update": false
+}
+EOF
+echo "Wrote common_site_config.json"
 
-# ---------- Ensure apps exist (idempotent) ----------
+# ---------- ensure apps ----------
 [ -d "$APPS/erpnext" ] || git clone --depth 1 -b version-15 https://github.com/frappe/erpnext "$APPS/erpnext"
-[ -d "$APPS/hrms" ]    || git clone --depth 1 -b version-15 https://github.com/frappe/hrms    "$APPS/hrms"
+[ -d "$APPS/hrms" ]    || git clone --depth 1 -b version-15 https://github.com/frappe/hrms "$APPS/hrms"
 
-# ---------- WAIT for external services ----------
+# ---------- WAIT ----------
 wait_for_db
-wait_for_redis "$REDIS_CACHE" "redis_cache"
-wait_for_redis "$REDIS_QUEUE" "redis_queue"
-wait_for_redis "$REDIS_SOCKETIO" "redis_socketio"
+wait_for_tcp "$(echo "$REDIS_CACHE" | sed -E 's#redis://([^:/]+).*#\1#')" \
+             "$(echo "$REDIS_CACHE" | sed -E 's#.*:([0-9]+)/.*#\1#')" \
+             "Redis"
 
-# ---------- Site init / migrate ----------
+# ---------- Site ----------
 if [ ! -f "$SITE_PATH/site_config.json" ]; then
-  echo ">>> Initializing site $SITE_NAME with DB $DB_NAME"
+  echo ">>> Creating site $SITE_NAME"
   bench new-site "$SITE_NAME" \
     --db-name "$DB_NAME" \
     --db-host "$DB_HOST" --db-port "$DB_PORT" \
@@ -131,28 +95,25 @@ if [ ! -f "$SITE_PATH/site_config.json" ]; then
     --no-mariadb-socket \
     --admin-password "$ADMIN_PASSWORD" \
     --install-app erpnext \
-    --force || echo "new-site failed (may already exist); continuing."
+    --force || echo "new-site failed; continuing."
 
-  # HRMS can be sensitive to Redis being ready—retry once if it fails
   bench --site "$SITE_NAME" install-app hrms || {
-    echo "HRMS install failed once; retrying after 5s..."
+    echo "HRMS install failed once; retrying..."
     sleep 5
-    bench --site "$SITE_NAME" install-app hrms || echo "HRMS install skipped/failed; continuing."
+    bench --site "$SITE_NAME" install-app hrms || echo "HRMS install skipped."
   }
 else
   echo ">>> Site exists. Running migrate + build."
   bench --site "$SITE_NAME" migrate || echo "migrate failed; will still serve."
 fi
 
-# ---------- Public URL (reverse proxy) ----------
+# ---------- host/proxy ----------
 if [[ -n "$PUBLIC_URL" ]]; then
   bench --site "$SITE_NAME" set-config host_name "$PUBLIC_URL" || true
-  bench --site "$SITE_NAME" set-config host_name_map "[\"${PUBLIC_URL#https://}\"]" || true
   bench --site "$SITE_NAME" set-config use_x_forwarded_host true || true
   bench --site "$SITE_NAME" set-config use_x_forwarded_proto true || true
 fi
 
-# ---------- Build assets (don’t block boot) ----------
 bench build || echo "bench build failed; serving anyway."
 
 # ---------- Serve ----------
