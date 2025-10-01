@@ -32,7 +32,10 @@ RUN pip install --no-cache-dir "frappe-bench>=5,<6"
 RUN useradd -ms /bin/bash frappe
 USER frappe
 WORKDIR /home/frappe
-RUN bench init --frappe-branch version-15 --no-setup-production --skip-redis-config-generation frappe-bench
+
+# remove --no-setup-production (and the redis skip flag)
+RUN bench init --frappe-branch version-15 frappe-bench
+
 WORKDIR ${BENCH_HOME}
 RUN bench get-app --branch version-15 https://github.com/frappe/erpnext
 RUN bench get-app --branch version-15 https://github.com/frappe/hrms
