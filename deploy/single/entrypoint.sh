@@ -1,24 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ===== Required env =====
-: "${SITE_NAME:?SITE_NAME not set}"                 # set this to your Railway domain (e.g. extraordinary-grace-production.up.railway.app)
+# ---- required env ----
+: "${SITE_NAME:?SITE_NAME not set}"
 : "${ADMIN_PASSWORD:?ADMIN_PASSWORD not set}"
-: "${DB_HOST:?DB_HOST not set}"                     # e.g. mariadb.railway.internal
-: "${DB_PORT:?DB_PORT not set}"                     # e.g. 3306
-: "${DB_ROOT_USER:?DB_ROOT_USER not set}"           # usually root
-: "${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD not set}"
-: "${DB_NAME:?DB_NAME not set}"                     # e.g. ATH_HRMS
-: "${PORT:?PORT not set}"                           # Railway provides this
+: "${DB_HOST:?DB_HOST not set}"
+: "${DB_PORT:?DB_PORT not set}"
+: "${DB_NAME:?DB_NAME not set}"
+: "${DB_USER:?DB_USER not set}"
+: "${DB_PASSWORD:?DB_PASSWORD not set}"
+: "${PORT:?PORT not set}"
 
-# Optional: if you provisioned Redis on Railway, pass full redis:// URLs.
-REDIS_CACHE_URL="${REDIS_CACHE:-}"
-REDIS_QUEUE_URL="${REDIS_QUEUE:-}"
-REDIS_SOCKETIO_URL="${REDIS_SOCKETIO:-}"
-
-BENCH=/home/frappe/frappe-bench
+BENCH="/home/frappe/frappe-bench"
 SITES="$BENCH/sites"
-APPS="$BENCH/apps"
 SITE_PATH="$SITES/$SITE_NAME"
 VENV="$BENCH/env"
 PIP="$VENV/bin/pip"
@@ -26,74 +20,67 @@ GUNICORN="$VENV/bin/gunicorn"
 
 cd "$BENCH"
 
-# --- Bench context ---
+echo ">>> Starting local Redis"
+mkdir -p /home/frappe/redis
+# no config file path; run with args so we don't hit /etc/redis perms
+redis-server --daemonize yes --bind 127.0.0.1 --port 6379 --save "" --appendonly no \
+  --dir /home/frappe/redis --pidfile /home/frappe/redis/redis.pid
+
+# wire frappe to local redis with proper URL scheme
 mkdir -p "$SITES"
-[ -f ./apps.txt ] || : > ./apps.txt
-[ -f "$SITES/apps.txt" ] || cp ./apps.txt "$SITES/apps.txt"
-[ -f "$SITES/common_site_config.json" ] || echo '{}' > "$SITES/common_site_config.json"
+cat > "$SITES/common_site_config.json" <<EOF
+{
+  "redis_cache": "redis://127.0.0.1:6379/0",
+  "redis_queue": "redis://127.0.0.1:6379/1",
+  "redis_socketio": "redis://127.0.0.1:6379/2"
+}
+EOF
 
-# Wire Redis only if provided (don’t start local redis in Railway)
-if [[ -n "$REDIS_CACHE_URL" || -n "$REDIS_QUEUE_URL" || -n "$REDIS_SOCKETIO_URL" ]]; then
-  # Build a small JSON blob with only provided keys
-  TMP=$(mktemp)
-  echo '{}' > "$TMP"
-  python3 - <<PY
-import json, os, sys
-p="$TMP"
-d=json.load(open(p))
-if os.getenv("REDIS_CACHE"):    d["redis_cache"]=os.environ["REDIS_CACHE"]
-if os.getenv("REDIS_QUEUE"):    d["redis_queue"]=os.environ["REDIS_QUEUE"]
-if os.getenv("REDIS_SOCKETIO"): d["redis_socketio"]=os.environ["REDIS_SOCKETIO"]
-json.dump(d, open(p,"w"))
-PY
-  mv "$TMP" "$SITES/common_site_config.json"
-fi
+# ensure DB exists and has proper settings (schema-level, not server-level)
+echo ">>> Ensuring database $DB_NAME exists with correct charset/collation"
+mysql --protocol=TCP -h "$DB_HOST" -P "$DB_PORT" -u"$DB_USER" -p"$DB_PASSWORD" \
+  -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`
+      CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+# set row_format on all new tables in this DB (Barracuda-ish)
+mysql --protocol=TCP -h "$DB_HOST" -P "$DB_PORT" -u"$DB_USER" -p"$DB_PASSWORD" "$DB_NAME" \
+  -e "SET SESSION sql_require_primary_key=OFF;"
 
-# --- Apps (ERPNext only for now; HRMS later once we move to py3.10 base) ---
-if [ ! -d "$APPS/erpnext" ]; then
-  git clone --depth 1 -b version-15 https://github.com/frappe/erpnext "$APPS/erpnext"
-fi
+# Python deps for apps (safe, idempotent)
+[ -f apps/erpnext/requirements.txt ] && "$PIP" install -q -r apps/erpnext/requirements.txt || true
+[ -f apps/hrms/requirements.txt ]    && "$PIP" install -q -r apps/hrms/requirements.txt    || true
 
-# Install any app-specific Python deps (quietly; don’t fail the boot)
-[ -f "$APPS/erpnext/requirements.txt" ] && "$PIP" install -q -r "$APPS/erpnext/requirements.txt" || true
+# Node deps for frappe build (idempotent)
+echo ">>> yarn install (apps/frappe)"
+( cd apps/frappe && yarn install --frozen-lockfile || yarn install )
 
-# --- Site init / migrate ---
+# create site if missing (use normal DB user; skip server-level checks)
 if [ ! -f "$SITE_PATH/site_config.json" ]; then
-  echo ">>> Initializing site $SITE_NAME with DB $DB_NAME"
+  echo ">>> Creating site $SITE_NAME on $DB_NAME"
   bench new-site "$SITE_NAME" \
     --db-name "$DB_NAME" \
     --db-host "$DB_HOST" --db-port "$DB_PORT" \
-    --db-root-username "$DB_ROOT_USER" \
-    --mariadb-root-password "$DB_ROOT_PASSWORD" \
+    --mariadb-root-username "$DB_USER" \
+    --mariadb-root-password "$DB_PASSWORD" \
     --no-mariadb-socket \
     --admin-password "$ADMIN_PASSWORD" \
-    --install-app erpnext \
-    --force || echo "new-site failed; continuing (DB may already exist or server settings differ)."
-
-  # bind host header so public URL works even if name differs later
-  if [ -f "$SITE_PATH/site_config.json" ]; then
-    python3 - <<PY
-import json,sys
-p="$SITE_PATH/site_config.json"
-d=json.load(open(p))
-d["host_name"]="${SITE_NAME}"
-json.dump(d, open(p,"w"))
-PY
-  fi
-
-  # current site pointer
-  echo "$SITE_NAME" > "$SITES/currentsite.txt"
-else
-  echo ">>> Site exists. Running migrate."
-  bench --site "$SITE_NAME" migrate || echo "migrate failed; continuing."
+    --force || echo "new-site failed; continuing (DB may already exist)."
 fi
 
-# --- Build frontend assets for frappe (needs yarn) ---
-bench build || echo "bench build failed; serving anyway."
+# install apps (idempotent: ignored if already installed)
+echo ">>> Installing ERPNext"
+bench --site "$SITE_NAME" install-app erpnext || echo "erpnext already installed or failed; continuing."
+echo ">>> Installing HRMS"
+bench --site "$SITE_NAME" install-app hrms || echo "hrms already installed or failed; continuing."
 
-# --- Serve HTTP ---
+# migrate & build
+echo ">>> Migrating $SITE_NAME"
+bench --site "$SITE_NAME" migrate || (echo "migrate failed; continuing."; true)
+
+echo ">>> Building assets"
+bench build || (echo "bench build failed; serving anyway."; true)
+
+# serve
 export FRAPPE_SITE="$SITE_NAME"
-exec "$GUNICORN" \
-  -b 0.0.0.0:"$PORT" -w 2 -k gevent --timeout 120 \
-  --chdir "$BENCH/apps/frappe" \
-  frappe.app:application
+echo ">>> Starting gunicorn on 0.0.0.0:${PORT}"
+exec "$GUNICORN" -b "0.0.0.0:${PORT}" -w 2 -k gevent --timeout 180 \
+  --chdir "$BENCH/apps/frappe" frappe.app:application
