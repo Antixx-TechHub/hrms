@@ -28,10 +28,9 @@ as_frappe "sed -i '/^[[:space:]]*redis[[:space:]]*:/d;/^[[:space:]]*watch[[:spac
 as_frappe "bench set-config -g db_host '${DB_HOST}'"
 as_frappe "bench set-config -g db_port '${DB_PORT}'"
 
-# Optional: if anything else binds 8000, move bench web to 8001 (uncomment next two lines)
-# as_frappe "bench set-config -g webserver_port 8001"
-# BENCH_WEB_PORT=8001 || BENCH_WEB_PORT=8000
-BENCH_WEB_PORT=8000
+# ---- Always run Frappe web on 8001 to avoid clashes with Nginx $PORT ----
+BENCH_WEB_PORT=8001
+as_frappe "bench set-config -g webserver_port ${BENCH_WEB_PORT}"
 
 # ---- Wait for externals ----
 echo "Waiting for MariaDB ${DB_HOST}:${DB_PORT}..."; until wait_tcp "$DB_HOST" "$DB_PORT"; do sleep 2; done
@@ -51,7 +50,7 @@ if ! as_frappe "bench --site '${SITE}' version" >/dev/null 2>&1; then
 fi
 as_frappe "bench use '${SITE}'"
 
-# ---- Write nginx.conf at runtime (no sed, no cache) ----
+# ---- Write nginx.conf at runtime (bind to Railway $PORT, proxy to 8001) ----
 rm -f /etc/nginx/conf.d/* /etc/nginx/sites-enabled/* || true
 cat >/etc/nginx/conf.d/frappe.conf <<EOF
 server {
