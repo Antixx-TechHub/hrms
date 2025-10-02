@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
+# ---- External services (Railway public TCP) ----
 DB_HOST="trolley.proxy.rlwy.net"; DB_PORT="51999"
 DB_NAME="railway"; DB_USER="railway"
 DB_PASS="hfxKFQNoMagViYHTotVOpsbiQ4Rzg_l-"
@@ -12,23 +13,33 @@ SITE="hrms.localhost"; ADMIN_PASSWORD="admin"
 PORT="${PORT:-8080}"
 
 cd /home/frappe/frappe-bench
+
 as_frappe(){ su -s /bin/bash -c "$*" frappe; }
 wait_tcp(){ timeout 20 bash -c "</dev/tcp/$1/$2" >/dev/null 2>&1; }
 
-# Force external Redis + DB
+# ---- Force external Redis + DB (before any start) ----
 REDIS_URI="redis://${REDIS_USER}:${REDIS_PASS}@${REDIS_HOST}:${REDIS_PORT}"
 as_frappe "bench set-redis-cache-host    '${REDIS_URI}' || true"
 as_frappe "bench set-redis-queue-host    '${REDIS_URI}' || true"
 as_frappe "bench set-redis-socketio-host '${REDIS_URI}' || true"
+# ensure bench won't try to spawn local redis/watch
 as_frappe "sed -i '/^[[:space:]]*redis[[:space:]]*:/d;/^[[:space:]]*watch[[:space:]]*:/d' Procfile || true"
+
 as_frappe "bench set-config -g db_host '${DB_HOST}'"
 as_frappe "bench set-config -g db_port '${DB_PORT}'"
 
+# Optional: if anything else binds 8000, move bench web to 8001 (uncomment next two lines)
+# as_frappe "bench set-config -g webserver_port 8001"
+# BENCH_WEB_PORT=8001 || BENCH_WEB_PORT=8000
+BENCH_WEB_PORT=8000
+
+# ---- Wait for externals ----
 echo "Waiting for MariaDB ${DB_HOST}:${DB_PORT}..."; until wait_tcp "$DB_HOST" "$DB_PORT"; do sleep 2; done
 echo "Waiting for Redis ${REDIS_HOST}:${REDIS_PORT}..."; until wait_tcp "$REDIS_HOST" "$REDIS_PORT"; do sleep 2; done
 
-# Create site if missing
+# ---- First boot: create site if missing (use DB user creds) ----
 if ! as_frappe "bench --site '${SITE}' version" >/dev/null 2>&1; then
+  echo "Creating site ${SITE}"
   as_frappe "bench new-site '${SITE}' \
     --force --admin-password '${ADMIN_PASSWORD}' \
     --db-name '${DB_NAME}' --db-host '${DB_HOST}' --db-port '${DB_PORT}' \
@@ -40,7 +51,7 @@ if ! as_frappe "bench --site '${SITE}' version" >/dev/null 2>&1; then
 fi
 as_frappe "bench use '${SITE}'"
 
-# Write nginx config freshly (no sed, no caches)
+# ---- Write nginx.conf at runtime (no sed, no cache) ----
 rm -f /etc/nginx/conf.d/* /etc/nginx/sites-enabled/* || true
 cat >/etc/nginx/conf.d/frappe.conf <<EOF
 server {
@@ -52,7 +63,7 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_http_version 1.1;
-        proxy_pass http://127.0.0.1:8000;
+        proxy_pass http://127.0.0.1:${BENCH_WEB_PORT};
     }
 
     location /socket.io/ {
@@ -69,7 +80,8 @@ server {
 }
 EOF
 
-grep -n 'listen' /etc/nginx/conf.d/frappe.conf
-
+grep -n 'listen' /etc/nginx/conf.d/frappe.conf || true
 /usr/sbin/nginx -g "daemon on;"
+
+# ---- Start bench ----
 exec su -s /bin/bash -c "bench start --no-dev" frappe
