@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Railway endpoints
+# ---- Railway endpoints ----
 DB_HOST="trolley.proxy.rlwy.net"; DB_PORT="51999"
 DB_NAME="railway"; DB_USER="railway"
 DB_PASS="hfxKFQNoMagViYHTotVOpsbiQ4Rzg_l-"
@@ -10,12 +10,15 @@ REDIS_HOST="nozomi.proxy.rlwy.net"; REDIS_PORT="46645"
 REDIS_USER="default"; REDIS_PASS="TUwUwNxPhXtoaysMLvnyssapQWtRbGpz"
 
 SITE="hrms.localhost"; ADMIN_PASSWORD="admin"
+
 cd /home/frappe/frappe-bench
 
-# Force external Redis and DB
-REDIS_URI="redis://${REDIS_USER}:${REDIS_PASS}@${REDIS_HOST}:${REDIS_PORT}"
+# ---- Helper ----
 as_frappe(){ su -s /bin/bash -c "$*" frappe; }
+wait_tcp(){ timeout 20 bash -c "</dev/tcp/$1/$2" >/dev/null 2>&1; }
 
+# ---- Force external Redis + DB ----
+REDIS_URI="redis://${REDIS_USER}:${REDIS_PASS}@${REDIS_HOST}:${REDIS_PORT}"
 as_frappe "bench set-redis-cache-host    '${REDIS_URI}' || true"
 as_frappe "bench set-redis-queue-host    '${REDIS_URI}' || true"
 as_frappe "bench set-redis-socketio-host '${REDIS_URI}' || true"
@@ -24,12 +27,11 @@ as_frappe "sed -i '/^[[:space:]]*redis[[:space:]]*:/d;/^[[:space:]]*watch[[:spac
 as_frappe "bench set-config -g db_host '${DB_HOST}'"
 as_frappe "bench set-config -g db_port '${DB_PORT}'"
 
-# wait for externals
-wait_tcp(){ timeout 20 bash -c "</dev/tcp/$1/$2" >/dev/null 2>&1; }
+# ---- Wait for externals ----
 echo "Waiting for MariaDB ${DB_HOST}:${DB_PORT}..."; until wait_tcp "$DB_HOST" "$DB_PORT"; do sleep 2; done
 echo "Waiting for Redis ${REDIS_HOST}:${REDIS_PORT}..."; until wait_tcp "$REDIS_HOST" "$REDIS_PORT"; do sleep 2; done
 
-# create site if missing (use DB user creds)
+# ---- Create site if missing (use DB user creds) ----
 if ! as_frappe "bench --site '${SITE}' version" >/dev/null 2>&1; then
   as_frappe "bench new-site '${SITE}' \
     --force --admin-password '${ADMIN_PASSWORD}' \
@@ -42,6 +44,9 @@ if ! as_frappe "bench --site '${SITE}' version" >/dev/null 2>&1; then
 fi
 as_frappe "bench use '${SITE}'"
 
-# start nginx then bench
+# ---- Render nginx port and start services ----
+: "${PORT:=8080}"
+sed -ri "s/\${PORT}/${PORT}/g" /etc/nginx/conf.d/frappe.conf
 /usr/sbin/nginx -g "daemon on;"
+
 exec su -s /bin/bash -c "bench start --no-dev" frappe
