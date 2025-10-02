@@ -45,8 +45,13 @@ fi
 as_frappe "bench use '${SITE}'"
 
 # ---- Render nginx port and start services ----
-: "${PORT:=8080}"
-sed -ri "s/\${PORT}/${PORT}/g" /etc/nginx/conf.d/frappe.conf
-/usr/sbin/nginx -g "daemon on;"
+PORT="${PORT:-8080}"
+# Replace literally the string ${PORT} without regex mode
+sed -i "s|\${PORT}|${PORT}|g" /etc/nginx/conf.d/frappe.conf
 
+# Optional sanity check
+grep -n 'listen' /etc/nginx/conf.d/frappe.conf || true
+
+/usr/sbin/nginx -g "daemon on;"
 exec su -s /bin/bash -c "bench start --no-dev" frappe
+
