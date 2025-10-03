@@ -15,7 +15,7 @@ BASE_DB="railway"  # prefer this, or auto-suffix if taken
 REDIS_URI="redis://default:TUwUwNxPhXtoaysMLvnyssapQWtRbGpz@nozomi.proxy.rlwy.net:46645"
 
 SITE="hrms.localhost"
-ADMIN_PASSWORD="admin"
+ADMIN_PASSWORD="mil_1013@athadmin@123"
 PUBLIC_URL="https://overflowing-harmony-production.up.railway.app"
 NGINX_PORT="${PORT:-8080}"
 WEB_PORT=8001
@@ -51,14 +51,14 @@ if [ ! -d "${SITE_DIR}" ]; then
     --db-name "${DB_NAME}" \
     --db-host "${DB_HOST}" --db-port "${DB_PORT}" \
     --db-root-username "${DB_ROOT_USER}" --db-root-password "${DB_ROOT_PASS}" \
-    --mariadb-user-host-login-scope='%'  # replace deprecated --no-mariadb-socket
+    --mariadb-user-host-login-scope='%'
   ${BENCH} --site "${SITE}" install-app erpnext hrms
   ${BENCH} --site "${SITE}" enable-scheduler
   ${BENCH} --site "${SITE}" clear-cache
 else
   # read existing db_name from site_config if present
   DB_NAME="$(python3 - <<'PY'
-import json,sys
+import json
 p="/home/frappe/frappe-bench/sites/hrms.localhost/site_config.json"
 print(json.load(open(p)).get("db_name","railway"))
 PY
@@ -75,7 +75,10 @@ bs "set-config db_port ${DB_PORT}"
 bs "set-config db_name '${DB_NAME}'"
 bs "set-config db_user '${DB_ROOT_USER}'"
 bs "set-config db_password '${DB_ROOT_PASS}'"
-bs "clear-cache"
+
+echo "== Build assets and clear cache =="
+bs "build" || true
+bs "clear-cache" || true
 
 echo "== Nginx =="
 rm -f /etc/nginx/conf.d/* /etc/nginx/sites-enabled/* || true
