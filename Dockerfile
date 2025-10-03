@@ -1,16 +1,15 @@
-# Base frappe/bench image
 FROM frappe/bench:latest
 
-# Add system deps
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      nginx-light nodejs ca-certificates curl \
-    && rm -rf /var/lib/apt/lists/*
+      nginx-light nodejs mariadb-client ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/* \
+ && rm -f /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*
 
-# Install bench Python package
+# Bench CLI must be importable at runtime
 RUN pip install --no-cache-dir frappe-bench
 
-# Initialize bench + apps
+# Build bench + apps
 USER frappe
 WORKDIR /home/frappe
 RUN bench init --skip-redis-config-generation --frappe-branch version-15 frappe-bench
