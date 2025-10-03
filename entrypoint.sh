@@ -14,32 +14,29 @@ REDIS_USER="default"; REDIS_PASS="TUwUwNxPhXtoaysMLvnyssapQWtRbGpz"
 
 SITE="hrms.localhost"; ADMIN_PASSWORD="admin"
 PORT="${PORT:-8080}"
-BENCH_WEB_PORT=8001    # avoid clash with nginx
+BENCH_WEB_PORT=8001
 
-# helpers
 wait_tcp(){ timeout 20 bash -c "</dev/tcp/$1/$2" >/dev/null 2>&1; }
 runf(){ su -s /bin/bash -c "cd ${BENCH_DIR} && $*" frappe; }
 bench(){ runf "${BENCH_BIN} $*"; }
+bench_site(){ runf "${BENCH_BIN} --site ${SITE} $*"; }
 
-# sanity
-command -v node >/dev/null 2>&1 || { echo "node missing"; exit 1; }
 cd "${BENCH_DIR}"
 
-# Configure external redis/db
+# External Redis/DB
 REDIS_URI="redis://${REDIS_USER}:${REDIS_PASS}@${REDIS_HOST}:${REDIS_PORT}"
 bench set-redis-cache-host    "${REDIS_URI}" || true
 bench set-redis-queue-host    "${REDIS_URI}" || true
 bench set-redis-socketio-host "${REDIS_URI}" || true
-
 bench set-config -g db_host "${DB_HOST}"
 bench set-config -g db_port "${DB_PORT}"
 bench set-config -g webserver_port "${BENCH_WEB_PORT}"
 
-# Wait for DB + Redis
+# Wait
 echo "Waiting for MariaDB ${DB_HOST}:${DB_PORT}..."; until wait_tcp "$DB_HOST" "$DB_PORT"; do sleep 2; done
 echo "Waiting for Redis ${REDIS_HOST}:${REDIS_PORT}..."; until wait_tcp "$REDIS_HOST" "$REDIS_PORT"; do sleep 2; done
 
-# Create site if missing
+# Site
 if ! bench --site "${SITE}" version >/dev/null 2>&1; then
   echo "Creating site ${SITE}"
   bench new-site "${SITE}" \
@@ -51,13 +48,13 @@ if ! bench --site "${SITE}" version >/dev/null 2>&1; then
     --db-root-username "${DB_ROOT_USER}" \
     --db-root-password "${DB_ROOT_PASS}" \
     --no-mariadb-socket
-  bench --site "${SITE}" install-app erpnext hrms
-  bench --site "${SITE}" enable-scheduler
-  bench --site "${SITE}" clear-cache
+  bench_site "install-app erpnext hrms"
+  bench_site "enable-scheduler"
+  bench_site "clear-cache"
 fi
-bench use "${SITE}"
+bench "use ${SITE}"
 
-# Nginx on Railway $PORT -> Frappe 8001 / SocketIO 9000
+# Nginx
 rm -f /etc/nginx/conf.d/* /etc/nginx/sites-enabled/* || true
 cat >/etc/nginx/conf.d/frappe.conf <<EOF
 server {
@@ -78,10 +75,10 @@ server {
 EOF
 /usr/sbin/nginx -g "daemon on;"
 
-# Run processes manually
-runf "${BENCH_BIN} --site ${SITE} serve --port ${BENCH_WEB_PORT}" &
-runf "${BENCH_BIN} worker --site ${SITE}" &
-runf "${BENCH_BIN} schedule --site ${SITE}" &
+# Run processes manually (correct --site order)
+bench_site "serve --port ${BENCH_WEB_PORT}" &
+bench_site "worker" &
+bench_site "schedule" &
 runf "node apps/frappe/socketio.js" &
 
 wait -n
