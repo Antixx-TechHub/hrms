@@ -1,113 +1,76 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
-BENCH_DIR="/home/frappe/frappe-bench"
-BENCH="/home/frappe/.local/bin/bench"
-SITE="hrms.localhost"
-PUBLIC_URL="https://overflowing-harmony-production.up.railway.app"
+# ---- Hardcoded Railway creds (as requested) ----
+# MariaDB (private network)
+export DB_HOST="${RAILWAY_PRIVATE_DOMAIN:-${MARIADB_HOST:-"trolley.internal"}}"
+export DB_PORT="3306"
+export DB_USER="railway"
+export DB_PASSWORD="hfxKFQNoMagViYHTotVOpsbiQ4Rzg_l-"
+export DB_ROOT_PASSWORD="CYI-Vi3_B_4Ndf7C1e3.usRHOuU_zkRU"
+export DB_NAME="new_ath_hrms"
 
-# DB (Railway public proxy, root user)
-DB_HOST="trolley.proxy.rlwy.net"
-DB_PORT="51999"
-DB_ROOT_USER="root"
-DB_ROOT_PASS="CYI-Vi3_B_4Ndf7C1e3.usRHOuU_zkRU"
-BASE_DB="railway"
+# Redis (private network)
+_redis_host="${RAILWAY_PRIVATE_DOMAIN:-${REDISHOST:-"trolley.internal"}}"
+_redis_user="default"
+_redis_pass="TUwUwNxPhXtoaysMLvnyssapQWtRbGpz"
+_redis_port="6379"
+export REDIS_URL="redis://${_redis_user}:${_redis_pass}@${_redis_host}:${_redis_port}"
 
-# Redis
-REDIS_URI="redis://default:TUwUwNxPhXtoaysMLvnyssapQWtRbGpz@nozomi.proxy.rlwy.net:46645"
+# Frappe site
+: "${SITE_NAME:=site1.local}"
+: "${ADMIN_PASSWORD:=admin}"   # change in Railway env if you want
 
-NGINX_PORT="${PORT:-8080}"
-WEB_PORT=8001
+cd /home/frappe/frappe-bench
 
-runf(){ su -s /bin/bash -c "cd ${BENCH_DIR} && $*" frappe; }
-b(){ runf "${BENCH} $*"; }
-bs(){ runf "${BENCH} --site ${SITE} $*"; }
-db_exists(){ mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u "$DB_ROOT_USER" -p"$DB_ROOT_PASS" -N -e "SHOW DATABASES LIKE '$1'" | grep -qx "$1"; }
+# Point bench to external services
+bench set-config -g db_host "$DB_HOST"
+bench set-config -g db_port "$DB_PORT"
+bench set-config -g redis_cache "$REDIS_URL"
+bench set-config -g redis_queue "$REDIS_URL"
+bench set-config -g redis_socketio "$REDIS_URL"
 
-echo "== 1/7 Ensure MariaDB reachable =="
-until mysqladmin --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u "$DB_ROOT_USER" -p"$DB_ROOT_PASS" ping >/dev/null 2>&1; do
-  echo "Waiting for MariaDB ${DB_HOST}:${DB_PORT}..."; sleep 2
-done
+# Create site if missing
+if [[ ! -d "sites/${SITE_NAME}" ]]; then
+  echo "Creating site ${SITE_NAME} against ${DB_HOST}:${DB_PORT}/${DB_NAME}"
 
-echo "== 2/7 Bench globals (Redis, DB) =="
-cd "${BENCH_DIR}"
-b set-redis-cache-host    "${REDIS_URI}" || true
-b set-redis-queue-host    "${REDIS_URI}" || true
-b set-redis-socketio-host "${REDIS_URI}" || true
-b set-config -g db_host "${DB_HOST}"
-b set-config -g db_port "${DB_PORT}"
-b set-config -g webserver_port "${WEB_PORT}"
+  # Ensure DB exists and user has rights using root (you provided root password)
+  mysql --protocol=TCP -h "$DB_HOST" -P "$DB_PORT" -u root -p"$DB_ROOT_PASSWORD" <<SQL
+CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` DEFAULT CHARACTER SET utf8mb4;
+GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'%' IDENTIFIED BY '${DB_PASSWORD}';
+FLUSH PRIVILEGES;
+SQL
 
-SITE_DIR="${BENCH_DIR}/sites/${SITE}"
+  # Create Frappe site bound to that DB
+  bench new-site "$SITE_NAME" \
+    --mariadb-root-username root \
+    --mariadb-root-password "$DB_ROOT_PASSWORD" \
+    --admin-password "$ADMIN_PASSWORD" \
+    --db-name "$DB_NAME" \
+    --db-username "$DB_USER" \
+    --db-password "$DB_PASSWORD"
 
-echo "== 3/7 Ensure site =="
-if [ ! -d "${SITE_DIR}" ]; then
-  DB_NAME="${BASE_DB}"; db_exists "${DB_NAME}" && DB_NAME="${BASE_DB}_$(date +%s)"
-  echo "Creating site ${SITE} on DB ${DB_NAME}"
-  ${BENCH} new-site "${SITE}" \
-    --admin-password "admin" \
-    --db-name "${DB_NAME}" \
-    --db-host "${DB_HOST}" --db-port "${DB_PORT}" \
-    --db-root-username "${DB_ROOT_USER}" --db-root-password "${DB_ROOT_PASS}" \
-    --mariadb-user-host-login-scope='%'
-  ${BENCH} --site "${SITE}" install-app erpnext hrms
-else
-  DB_NAME="$(python3 - <<'PY'
-import json; print(json.load(open("/home/frappe/frappe-bench/sites/hrms.localhost/site_config.json")).get("db_name","railway"))
-PY
-  )"
-  echo "Site dir exists. Using existing DB ${DB_NAME}"
+  # Install apps
+  bench --site "$SITE_NAME" install-app erpnext
+  bench --site "$SITE_NAME" install-app hrms
 fi
 
-echo "== 4/7 Final site_config.json override =="
-SITE_CFG="${SITE_DIR}/site_config.json"
-cat >"${SITE_CFG}" <<JSON
-{
-  "db_type": "mariadb",
-  "db_name": "${DB_NAME}",
-  "db_host": "${DB_HOST}",
-  "db_port": ${DB_PORT},
-  "db_user": "${DB_ROOT_USER}",
-  "db_password": "${DB_ROOT_PASS}"
-}
-JSON
-chmod 640 "${SITE_CFG}"
+# Migrate each boot
+bench --site "$SITE_NAME" migrate
 
-echo "== 5/7 Hostname, assets =="
-b "use ${SITE}"
-b set-config -g default_site "${SITE}"
-bs "set-config host_name '${PUBLIC_URL}'"
-command -v yarn >/dev/null 2>&1 || npm install -g yarn@1.22.22
-bs "build" || true
-bs "clear-cache" || true
+# Honor Railway's PORT
+export WEB_PORT="${PORT:-8000}"
 
-echo "== 6/7 Nginx proxy =="
-rm -f /etc/nginx/conf.d/* /etc/nginx/sites-enabled/* || true
-cat >/etc/nginx/conf.d/frappe.conf <<EOF
-server {
-  listen ${NGINX_PORT} default_server reuseport;
-  listen [::]:${NGINX_PORT} default_server;
-  location / {
-    proxy_set_header Host \$host;
-    proxy_set_header X-Forwarded-Proto \$scheme;
-    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    proxy_pass http://127.0.0.1:${WEB_PORT};
-  }
-  location /socket.io/ {
-    proxy_set_header Upgrade \$http_upgrade;
-    proxy_set_header Connection "upgrade";
-    proxy_set_header Host \$host;
-    proxy_pass http://127.0.0.1:9000/socket.io/;
-  }
-}
-EOF
-/usr/sbin/nginx -g "daemon on;"
+# Minimal Procfile defaults if none present
+if [[ ! -f Procfile ]]; then
+  cat > Procfile <<'P'
+web: bench serve --port $WEB_PORT --noreload --nothreading
+schedule: bench schedule
+worker-default: bench worker --queue default
+worker-short: bench worker --queue short
+worker-long: bench worker --queue long
+socketio: node apps/frappe/socketio.js
+P
+fi
 
-echo "== 7/7 Start services =="
-bs "serve --port ${WEB_PORT}" &
-bs "worker" &
-bs "schedule" &
-runf "node apps/frappe/socketio.js" &
-
-echo "Startup complete. URL=${PUBLIC_URL}"
-wait -n
+exec forego start -r
