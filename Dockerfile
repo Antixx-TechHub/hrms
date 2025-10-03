@@ -5,7 +5,7 @@ SHELL ["/bin/bash", "-lc"]
 RUN curl -fsSL https://github.com/ddollar/forego/releases/download/v0.17.2/forego_linux_amd64.tgz \
   | tar -xz -C /usr/local/bin && chmod +x /usr/local/bin/forego
 
-# Bench CLI available at runtime
+# Bench CLI at runtime
 RUN pip install --no-cache-dir frappe-bench
 
 # Create bench and fetch apps
@@ -24,7 +24,6 @@ RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh && chown -R frapp
 
 ENV PORT=8000
 EXPOSE 8000
-VOLUME ["/home/frappe/frappe-bench/sites"]
 
 USER frappe
 WORKDIR /home/frappe/frappe-bench
