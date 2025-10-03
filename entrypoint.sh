@@ -4,13 +4,15 @@ set -euo pipefail
 BENCH_DIR="/home/frappe/frappe-bench"
 BENCH="/home/frappe/.local/bin/bench"
 
-# --- Public MariaDB (works from your tests) ---
+# --- MariaDB public TCP (root works) ---
 DB_HOST="trolley.proxy.rlwy.net"; DB_PORT="51999"
 DB_ROOT_USER="root"; DB_ROOT_PASS="CYI-Vi3_B_4Ndf7C1e3.usRHOuU_zkRU"
 DB_NAME="railway"
+
+# optional: precreate app user, harmless if not used by bench
 DB_APP_USER="railway"; DB_APP_PASS="hfxKFQNoMagViYHTotVOpsbiQ4Rzg_l-"
 
-# --- Redis (public) ---
+# --- Redis public TCP ---
 REDIS_URI="redis://default:TUwUwNxPhXtoaysMLvnyssapQWtRbGpz@nozomi.proxy.rlwy.net:46645"
 
 SITE="hrms.localhost"; ADMIN_PASSWORD="admin"
@@ -27,7 +29,7 @@ until mysqladmin --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u "$DB_ROOT_USER" -
   echo "Waiting for MariaDB ${DB_HOST}:${DB_PORT}..."; sleep 2
 done
 
-echo "== Ensure DB and app user =="
+echo "== Ensure DB (and optional app user) =="
 mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u "$DB_ROOT_USER" -p"$DB_ROOT_PASS" <<SQL
 CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\`;
 CREATE USER IF NOT EXISTS '${DB_APP_USER}'@'%' IDENTIFIED BY '${DB_APP_PASS}';
@@ -47,12 +49,13 @@ b set-config -g webserver_port "${WEB_PORT}"
 SITE_DIR="${BENCH_DIR}/sites/${SITE}"
 echo "== Ensure site directory =="
 if [ ! -d "${SITE_DIR}" ]; then
-  echo "Creating site ${SITE} on DB ${DB_NAME} as ${DB_APP_USER}"
+  echo "Creating site ${SITE} on DB ${DB_NAME} with ROOT creds"
+  # IMPORTANT: bench accepts ONLY root flags here
   ${BENCH} new-site "${SITE}" \
     --admin-password "${ADMIN_PASSWORD}" \
     --db-name "${DB_NAME}" \
     --db-host "${DB_HOST}" --db-port "${DB_PORT}" \
-    --db-username "${DB_APP_USER}" --db-password "${DB_APP_PASS}" \
+    --db-root-username "${DB_ROOT_USER}" --db-root-password "${DB_ROOT_PASS}" \
     --no-mariadb-socket
   ${BENCH} --site "${SITE}" install-app erpnext hrms
   ${BENCH} --site "${SITE}" enable-scheduler
