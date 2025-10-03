@@ -7,7 +7,9 @@ BENCH_BIN="/home/frappe/.local/bin/bench"
 # Railway external services
 DB_HOST="trolley.proxy.rlwy.net"; DB_PORT="51999"
 DB_ROOT_USER="root"; DB_ROOT_PASS="CYI-Vi3_B_4Ndf7C1e3.usRHOuU_zkRU"
-DB_NAME="railway"
+
+# Use a fresh DB name to avoid collision with existing "railway"
+DB_NAME="hrms_${RAILWAY_SERVICE_ID:-$(date +%s)}"
 
 REDIS_HOST="nozomi.proxy.rlwy.net"; REDIS_PORT="46645"
 REDIS_USER="default"; REDIS_PASS="TUwUwNxPhXtoaysMLvnyssapQWtRbGpz"
@@ -39,7 +41,7 @@ echo "Waiting for Redis ${REDIS_HOST}:${REDIS_PORT}..."; until wait_tcp "$REDIS_
 
 # Site
 if ! bench --site "${SITE}" version >/dev/null 2>&1; then
-  echo "Creating site ${SITE}"
+  echo "Creating site ${SITE} on DB ${DB_NAME}"
   bench new-site "${SITE}" \
     --force \
     --admin-password "${ADMIN_PASSWORD}" \
@@ -66,7 +68,6 @@ server {
     listen ${PORT} default_server reuseport;
     listen [::]:${PORT} default_server;
 
-    # keep Host so frappe site routing works
     location / {
         proxy_set_header Host \$host;
         proxy_set_header X-Forwarded-Proto \$scheme;
