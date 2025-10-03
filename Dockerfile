@@ -1,12 +1,14 @@
 FROM frappe/bench:latest
 
 USER root
+# Add nodejs + npm + yarn, mariadb-client, nginx
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      nginx-light nodejs mariadb-client ca-certificates curl \
+      nginx-light nodejs npm mariadb-client ca-certificates curl \
+ && npm install -g yarn@1.22.22 \
  && rm -rf /var/lib/apt/lists/* \
  && rm -f /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*
 
-# Bench CLI must be importable at runtime
+# Make sure bench CLI is importable
 RUN pip install --no-cache-dir frappe-bench
 
 # Build bench + apps
