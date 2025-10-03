@@ -1,13 +1,13 @@
 FROM frappe/bench:latest
 
-# Nginx + Node.js (Debian 12 ships Node 18.x which is fine for Frappe v15)
 USER root
+# Add nginx + node + mariadb-client for DB sanity check
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      nginx-light nodejs ca-certificates curl \
+      nginx-light nodejs mariadb-client ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*
 
-# Bake bench + apps (skip redis config at build)
+# Build bench + apps (ERPNext + HRMS)
 USER frappe
 WORKDIR /home/frappe
 RUN bench init --skip-redis-config-generation --frappe-branch version-15 frappe-bench
@@ -15,7 +15,7 @@ WORKDIR /home/frappe/frappe-bench
 RUN bench get-app --branch version-15 https://github.com/frappe/erpnext && \
     bench get-app --branch version-15 https://github.com/frappe/hrms
 
-# Runtime entrypoint
+# Back to root for runtime
 USER root
 COPY entrypoint.sh /entrypoint.sh
 RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh

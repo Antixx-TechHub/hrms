@@ -1,15 +1,14 @@
 #!/bin/bash
 set -euo pipefail
+set -x  # verbose so we see the actual error
 
 BENCH_DIR="/home/frappe/frappe-bench"
 BENCH_BIN="/home/frappe/.local/bin/bench"
 
-# Railway external services
-DB_HOST="trolley.proxy.rlwy.net"; DB_PORT="51999"
+# Use Railway PRIVATE DB inside Railway
+DB_HOST="mariadb.railway.internal"; DB_PORT="3306"
 DB_ROOT_USER="root"; DB_ROOT_PASS="CYI-Vi3_B_4Ndf7C1e3.usRHOuU_zkRU"
-
-# Use a fresh DB name to avoid collision with existing "railway"
-DB_NAME="hrms_${RAILWAY_SERVICE_ID:-$(date +%s)}"
+DB_NAME="${DB_NAME:-hrms_${RAILWAY_SERVICE_ID:-$(date +%s)}}"
 
 REDIS_HOST="nozomi.proxy.rlwy.net"; REDIS_PORT="46645"
 REDIS_USER="default"; REDIS_PASS="TUwUwNxPhXtoaysMLvnyssapQWtRbGpz"
@@ -26,7 +25,7 @@ bench_site(){ runf "${BENCH_BIN} --site ${SITE} $*"; }
 
 cd "${BENCH_DIR}"
 
-# External Redis/DB
+# External Redis/DB wiring
 REDIS_URI="redis://${REDIS_USER}:${REDIS_PASS}@${REDIS_HOST}:${REDIS_PORT}"
 bench set-redis-cache-host    "${REDIS_URI}" || true
 bench set-redis-queue-host    "${REDIS_URI}" || true
@@ -35,11 +34,14 @@ bench set-config -g db_host "${DB_HOST}"
 bench set-config -g db_port "${DB_PORT}"
 bench set-config -g webserver_port "${BENCH_WEB_PORT}"
 
-# Wait
 echo "Waiting for MariaDB ${DB_HOST}:${DB_PORT}..."; until wait_tcp "$DB_HOST" "$DB_PORT"; do sleep 2; done
 echo "Waiting for Redis ${REDIS_HOST}:${REDIS_PORT}..."; until wait_tcp "$REDIS_HOST" "$REDIS_PORT"; do sleep 2; done
 
-# Site
+# Sanity: prove DB auth and pre-create DB
+mysql -h "${DB_HOST}" -P "${DB_PORT}" -u "${DB_ROOT_USER}" -p"${DB_ROOT_PASS}" \
+  -e "CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\`;"
+
+# Site creation (show full output, fail on error)
 if ! bench --site "${SITE}" version >/dev/null 2>&1; then
   echo "Creating site ${SITE} on DB ${DB_NAME}"
   bench new-site "${SITE}" \
@@ -57,35 +59,23 @@ if ! bench --site "${SITE}" version >/dev/null 2>&1; then
 fi
 bench "use ${SITE}"
 
-# Map host → site
+# Route host -> site
 bench set-config -g default_site "${SITE}"
 bench_site "set-config host_name '${PUBLIC_URL}'"
 
-# Nginx
+# Nginx (listen $PORT, proxy to 8001/9000)
 rm -f /etc/nginx/conf.d/* /etc/nginx/sites-enabled/* || true
 cat >/etc/nginx/conf.d/frappe.conf <<EOF
 server {
     listen ${PORT} default_server reuseport;
     listen [::]:${PORT} default_server;
-
-    location / {
-        proxy_set_header Host \$host;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_pass http://127.0.0.1:${BENCH_WEB_PORT};
-    }
-
-    location /socket.io/ {
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-        proxy_pass http://127.0.0.1:9000/socket.io/;
-    }
+    location / { proxy_set_header Host \$host; proxy_pass http://127.0.0.1:${BENCH_WEB_PORT}; }
+    location /socket.io/ { proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection "upgrade"; proxy_set_header Host \$host; proxy_pass http://127.0.0.1:9000/socket.io/; }
 }
 EOF
 /usr/sbin/nginx -g "daemon on;"
 
-# Run processes manually (correct --site order)
+# Run services manually (correct CLI order)
 bench_site "serve --port ${BENCH_WEB_PORT}" &
 bench_site "worker" &
 bench_site "schedule" &
