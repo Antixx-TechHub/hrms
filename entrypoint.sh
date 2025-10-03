@@ -70,18 +70,16 @@ test -f "${SITE_DIR}/site_config.json"
 
 echo "== 4/8 Force per-site DB config to root over public proxy =="
 SITE_CFG="${SITE_DIR}/site_config.json"
-python3 - <<PY
-import json
-p="${SITE_CFG}"
-cfg=json.load(open(p))
-cfg["db_name"]="""${DB_NAME}"""
-cfg["db_host"]="""${DB_HOST}"""
-cfg["db_port"]="""${DB_PORT}"""
-cfg["db_user"]="""${DB_ROOT_USER}"""
-cfg["db_password"]="""${DB_ROOT_PASS}"""
-json.dump(cfg, open(p,"w"), indent=2)
-print("Wrote site_config.json with root over public proxy")
-PY
+cat >"${SITE_CFG}" <<JSON
+{
+  "db_name": "${DB_NAME}",
+  "db_host": "${DB_HOST}",
+  "db_port": ${DB_PORT},
+  "db_user": "${DB_ROOT_USER}",
+  "db_password": "${DB_ROOT_PASS}"
+}
+JSON
+echo "Wrote ${SITE_CFG}"
 
 echo "== 5/8 Final bench site globals =="
 b "use ${SITE}"
