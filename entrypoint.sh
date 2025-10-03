@@ -4,15 +4,18 @@ set -euo pipefail
 BENCH_DIR="/home/frappe/frappe-bench"
 BENCH="/home/frappe/.local/bin/bench"
 
-# --- MariaDB public TCP (root works) ---
-DB_HOST="trolley.proxy.rlwy.net"; DB_PORT="51999"
-DB_ROOT_USER="root"; DB_ROOT_PASS="CYI-Vi3_B_4Ndf7C1e3.usRHOuU_zkRU"
+# MariaDB via PUBLIC TCP (matches DBeaver)
+DB_HOST="trolley.proxy.rlwy.net"
+DB_PORT="51999"
+DB_ROOT_USER="root"
+DB_ROOT_PASS="CYI-Vi3_B_4Ndf7C1e3.usRHOuU_zkRU"
 DB_NAME="railway"
 
-# --- Redis public TCP ---
+# Redis via PUBLIC TCP
 REDIS_URI="redis://default:TUwUwNxPhXtoaysMLvnyssapQWtRbGpz@nozomi.proxy.rlwy.net:46645"
 
-SITE="hrms.localhost"; ADMIN_PASSWORD="admin"
+SITE="hrms.localhost"
+ADMIN_PASSWORD="admin"
 PUBLIC_URL="https://overflowing-harmony-production.up.railway.app"
 NGINX_PORT="${PORT:-8080}"
 WEB_PORT=8001
@@ -40,7 +43,7 @@ b set-config -g db_port "${DB_PORT}"
 b set-config -g webserver_port "${WEB_PORT}"
 
 SITE_DIR="${BENCH_DIR}/sites/${SITE}"
-echo "== Ensure site directory =="
+echo "== Ensure site =="
 if [ ! -d "${SITE_DIR}" ]; then
   echo "Creating site ${SITE} on DB ${DB_NAME} with ROOT creds"
   ${BENCH} new-site "${SITE}" \
@@ -59,10 +62,11 @@ b "use ${SITE}"
 b set-config -g default_site "${SITE}"
 bs "set-config host_name '${PUBLIC_URL}'"
 
-# --- Force per-site DB creds to public proxy + root (fixes OperationalError 1045) ---
-echo "== Patch per-site DB credentials =="
+# Force per-site DB creds to match DBeaver (fixes 1045)
+echo "== Force per-site DB config to root over public proxy =="
 bs "set-config db_host '${DB_HOST}'"
 bs "set-config db_port ${DB_PORT}"
+bs "set-config db_name '${DB_NAME}'"
 bs "set-config db_user '${DB_ROOT_USER}'"
 bs "set-config db_password '${DB_ROOT_PASS}'"
 bs "clear-cache"
