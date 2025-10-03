@@ -1,35 +1,38 @@
 #!/bin/bash
 set -euo pipefail
 
+# ===== Constants =====
 BENCH_DIR="/home/frappe/frappe-bench"
 BENCH="/home/frappe/.local/bin/bench"
+SITE="hrms.localhost"
+PUBLIC_URL="https://overflowing-harmony-production.up.railway.app"
 
-# MariaDB via PUBLIC TCP (same as DBeaver)
+# MariaDB over public TCP (matches your DBeaver)
 DB_HOST="trolley.proxy.rlwy.net"
 DB_PORT="51999"
 DB_ROOT_USER="root"
 DB_ROOT_PASS="CYI-Vi3_B_4Ndf7C1e3.usRHOuU_zkRU"
-BASE_DB="railway"  # prefer this, or auto-suffix if taken
+BASE_DB="railway"          # preferred base; if taken we suffix with timestamp
 
-# Redis (public TCP)
+# Redis over public TCP
 REDIS_URI="redis://default:TUwUwNxPhXtoaysMLvnyssapQWtRbGpz@nozomi.proxy.rlwy.net:46645"
 
-SITE="hrms.localhost"
-ADMIN_PASSWORD="mil_1013@athadmin@123"
-PUBLIC_URL="https://overflowing-harmony-production.up.railway.app"
+# Ports
 NGINX_PORT="${PORT:-8080}"
 WEB_PORT=8001
 
+# ===== Helpers =====
 runf(){ su -s /bin/bash -c "cd ${BENCH_DIR} && $*" frappe; }
 b(){ runf "${BENCH} $*"; }
 bs(){ runf "${BENCH} --site ${SITE} $*"; }
-mysql_q(){ mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u "$DB_ROOT_USER" -p"$DB_ROOT_PASS" -N -e "$1"; }
+db_exists(){ mysql --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u "$DB_ROOT_USER" -p"$DB_ROOT_PASS" -N -e "SHOW DATABASES LIKE '$1'" | grep -qx "$1"; }
 
-echo "== DB ping =="
+echo "== 1/8 Ensure DB reachable =="
 until mysqladmin --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u "$DB_ROOT_USER" -p"$DB_ROOT_PASS" ping >/dev/null 2>&1; do
   echo "Waiting for MariaDB ${DB_HOST}:${DB_PORT}..."; sleep 2
 done
 
+echo "== 2/8 Bench config (Redis/DB/global) =="
 cd "${BENCH_DIR}"
 b set-redis-cache-host    "${REDIS_URI}" || true
 b set-redis-queue-host    "${REDIS_URI}" || true
@@ -39,15 +42,15 @@ b set-config -g db_port "${DB_PORT}"
 b set-config -g webserver_port "${WEB_PORT}"
 
 SITE_DIR="${BENCH_DIR}/sites/${SITE}"
+
+echo "== 3/8 Ensure site existence =="
 if [ ! -d "${SITE_DIR}" ]; then
-  # pick a DB name that does NOT exist; do NOT create it here
+  # pick a DB name that does not yet exist; let bench create it
   DB_NAME="${BASE_DB}"
-  if mysql_q "SHOW DATABASES LIKE '${DB_NAME}'" | grep -qx "${DB_NAME}"; then
-    DB_NAME="${BASE_DB}_$(date +%s)"
-  fi
-  echo "== Creating site ${SITE} on DB ${DB_NAME} (bench will create DB) =="
+  if db_exists "${DB_NAME}"; then DB_NAME="${BASE_DB}_$(date +%s)"; fi
+  echo "Creating site ${SITE} on DB ${DB_NAME}"
   ${BENCH} new-site "${SITE}" \
-    --admin-password "${ADMIN_PASSWORD}" \
+    --admin-password "admin" \
     --db-name "${DB_NAME}" \
     --db-host "${DB_HOST}" --db-port "${DB_PORT}" \
     --db-root-username "${DB_ROOT_USER}" --db-root-password "${DB_ROOT_PASS}" \
@@ -56,31 +59,40 @@ if [ ! -d "${SITE_DIR}" ]; then
   ${BENCH} --site "${SITE}" enable-scheduler
   ${BENCH} --site "${SITE}" clear-cache
 else
-  # read existing db_name from site_config if present
+  # read db_name from existing site_config
   DB_NAME="$(python3 - <<'PY'
-import json
-p="/home/frappe/frappe-bench/sites/hrms.localhost/site_config.json"
-print(json.load(open(p)).get("db_name","railway"))
+import json; print(json.load(open("/home/frappe/frappe-bench/sites/hrms.localhost/site_config.json")).get("db_name","railway"))
 PY
   )"
+  echo "Site dir exists. Using existing DB ${DB_NAME}"
 fi
+test -f "${SITE_DIR}/site_config.json"
 
+echo "== 4/8 Force per-site DB config to root over public proxy =="
+SITE_CFG="${SITE_DIR}/site_config.json"
+python3 - <<PY
+import json
+p="${SITE_CFG}"
+cfg=json.load(open(p))
+cfg["db_name"]="""${DB_NAME}"""
+cfg["db_host"]="""${DB_HOST}"""
+cfg["db_port"]="""${DB_PORT}"""
+cfg["db_user"]="""${DB_ROOT_USER}"""
+cfg["db_password"]="""${DB_ROOT_PASS}"""
+json.dump(cfg, open(p,"w"), indent=2)
+print("Wrote site_config.json with root over public proxy")
+PY
+
+echo "== 5/8 Final bench site globals =="
 b "use ${SITE}"
 b set-config -g default_site "${SITE}"
 bs "set-config host_name '${PUBLIC_URL}'"
 
-echo "== Force per-site DB config to public proxy root =="
-bs "set-config db_host '${DB_HOST}'"
-bs "set-config db_port ${DB_PORT}"
-bs "set-config db_name '${DB_NAME}'"
-bs "set-config db_user '${DB_ROOT_USER}'"
-bs "set-config db_password '${DB_ROOT_PASS}'"
-
-echo "== Build assets and clear cache =="
+echo "== 6/8 Build static assets and clear cache =="
 bs "build" || true
 bs "clear-cache" || true
 
-echo "== Nginx =="
+echo "== 7/8 Nginx proxy =="
 rm -f /etc/nginx/conf.d/* /etc/nginx/sites-enabled/* || true
 cat >/etc/nginx/conf.d/frappe.conf <<EOF
 server {
@@ -101,10 +113,12 @@ server {
 }
 EOF
 /usr/sbin/nginx -g "daemon on;"
+echo "Nginx listening on ${NGINX_PORT} -> Frappe ${WEB_PORT}"
 
-echo "== Start services =="
+echo "== 8/8 Start services =="
 bs "serve --port ${WEB_PORT}" &
 bs "worker" &
 bs "schedule" &
 runf "node apps/frappe/socketio.js" &
+echo "Startup complete. URL=${PUBLIC_URL}"
 wait -n
