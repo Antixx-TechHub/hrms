@@ -21,7 +21,8 @@ wait_tcp(){ timeout 20 bash -c "</dev/tcp/$1/$2" >/dev/null 2>&1; }
 runf(){ su -s /bin/bash -c "cd ${BENCH_DIR} && $*" frappe; }
 bench(){ runf "${BENCH_BIN} $*"; }
 
-# ensure bench dir exists
+# sanity
+command -v node >/dev/null 2>&1 || { echo "node missing"; exit 1; }
 cd "${BENCH_DIR}"
 
 # Configure external redis/db
@@ -35,10 +36,8 @@ bench set-config -g db_port "${DB_PORT}"
 bench set-config -g webserver_port "${BENCH_WEB_PORT}"
 
 # Wait for DB + Redis
-echo "Waiting for MariaDB ${DB_HOST}:${DB_PORT}..."
-until wait_tcp "$DB_HOST" "$DB_PORT"; do sleep 2; done
-echo "Waiting for Redis ${REDIS_HOST}:${REDIS_PORT}..."
-until wait_tcp "$REDIS_HOST" "$REDIS_PORT"; do sleep 2; done
+echo "Waiting for MariaDB ${DB_HOST}:${DB_PORT}..."; until wait_tcp "$DB_HOST" "$DB_PORT"; do sleep 2; done
+echo "Waiting for Redis ${REDIS_HOST}:${REDIS_PORT}..."; until wait_tcp "$REDIS_HOST" "$REDIS_PORT"; do sleep 2; done
 
 # Create site if missing
 if ! bench --site "${SITE}" version >/dev/null 2>&1; then
@@ -58,7 +57,7 @@ if ! bench --site "${SITE}" version >/dev/null 2>&1; then
 fi
 bench use "${SITE}"
 
-# Runtime nginx proxy
+# Nginx on Railway $PORT -> Frappe 8001 / SocketIO 9000
 rm -f /etc/nginx/conf.d/* /etc/nginx/sites-enabled/* || true
 cat >/etc/nginx/conf.d/frappe.conf <<EOF
 server {
@@ -79,7 +78,7 @@ server {
 EOF
 /usr/sbin/nginx -g "daemon on;"
 
-# ---- Run processes manually (no honcho/Procfile) ----
+# Run processes manually
 runf "${BENCH_BIN} --site ${SITE} serve --port ${BENCH_WEB_PORT}" &
 runf "${BENCH_BIN} worker --site ${SITE}" &
 runf "${BENCH_BIN} schedule --site ${SITE}" &
