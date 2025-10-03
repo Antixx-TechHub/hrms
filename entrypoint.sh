@@ -13,6 +13,7 @@ REDIS_HOST="nozomi.proxy.rlwy.net"; REDIS_PORT="46645"
 REDIS_USER="default"; REDIS_PASS="TUwUwNxPhXtoaysMLvnyssapQWtRbGpz"
 
 SITE="hrms.localhost"; ADMIN_PASSWORD="admin"
+PUBLIC_URL="https://overflowing-harmony-production.up.railway.app"
 PORT="${PORT:-8080}"
 BENCH_WEB_PORT=8001
 
@@ -54,6 +55,10 @@ if ! bench --site "${SITE}" version >/dev/null 2>&1; then
 fi
 bench "use ${SITE}"
 
+# Map host → site
+bench set-config -g default_site "${SITE}"
+bench_site "set-config host_name '${PUBLIC_URL}'"
+
 # Nginx
 rm -f /etc/nginx/conf.d/* /etc/nginx/sites-enabled/* || true
 cat >/etc/nginx/conf.d/frappe.conf <<EOF
@@ -61,14 +66,18 @@ server {
     listen ${PORT} default_server reuseport;
     listen [::]:${PORT} default_server;
 
+    # keep Host so frappe site routing works
     location / {
         proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_pass http://127.0.0.1:${BENCH_WEB_PORT};
     }
 
     location /socket.io/ {
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
         proxy_pass http://127.0.0.1:9000/socket.io/;
     }
 }
