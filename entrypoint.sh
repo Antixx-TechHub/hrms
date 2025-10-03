@@ -10,7 +10,7 @@ DB_ROOT_USER="root"; DB_ROOT_PASS="CYI-Vi3_B_4Ndf7C1e3.usRHOuU_zkRU"
 DB_NAME="railway"
 
 # optional: precreate app user, harmless if not used by bench
-DB_APP_USER="railway"; DB_APP_PASS="hfxKFQNoMagViYHTotVOpsbiQ4Rzg_l-"
+# DB_APP_USER="railway"; DB_APP_PASS="hfxKFQNoMagViYHTotVOpsbiQ4Rzg_l-"
 
 # --- Redis public TCP ---
 REDIS_URI="redis://default:TUwUwNxPhXtoaysMLvnyssapQWtRbGpz@nozomi.proxy.rlwy.net:46645"
