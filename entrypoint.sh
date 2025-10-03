@@ -5,8 +5,8 @@ BENCH_DIR="/home/frappe/frappe-bench"
 BENCH_BIN="/home/frappe/.local/bin/bench"
 
 # Railway DB/Redis
-DB_HOST="mariadb.railway.internal"
-DB_PORT="3306"
+DB_HOST="trolley.proxy.rlwy.net"
+DB_PORT="51999"
 DB_ROOT_USER="root"
 DB_ROOT_PASS="CYI-Vi3_B_4Ndf7C1e3.usRHOuU_zkRU"
 DB_NAME="railway"
