@@ -7,7 +7,7 @@ BENCH="/home/frappe/.local/bin/bench"
 # MariaDB via PUBLIC TCP (root works)
 DB_HOST="trolley.proxy.rlwy.net"; DB_PORT="51999"
 DB_ROOT_USER="root"; DB_ROOT_PASS="CYI-Vi3_B_4Ndf7C1e3.usRHOuU_zkRU"
-DB_NAME="${DB_NAME:-railway}"
+DB_NAME="${DB_NAME:-ath_hrms}"
 
 # Redis via PUBLIC TCP
 REDIS_HOST="nozomi.proxy.rlwy.net"; REDIS_PORT="46645"
