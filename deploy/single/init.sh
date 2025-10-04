@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# -------- Fixed credentials (Railway public proxies, as provided) --------
+# -------- Fixed credentials (Railway public proxies) --------
 SITE_NAME="hrms.localhost"
 ADMIN_PASSWORD="admin_001013"
 
@@ -17,32 +17,42 @@ REDIS_CACHE_URL="redis://default:TUwUwNxPhXtoaysMLvnyssapQWtRbGpz@nozomi.proxy.r
 REDIS_QUEUE_URL="redis://default:TUwUwNxPhXtoaysMLvnyssapQWtRbGpz@nozomi.proxy.rlwy.net:46645"
 REDIS_SOCKETIO_URL="redis://default:TUwUwNxPhXtoaysMLvnyssapQWtRbGpz@nozomi.proxy.rlwy.net:46645"
 
-# Your Railway domain
+# Your Railway domain (update if changed)
 RAILWAY_DOMAIN="overflowing-harmony-production.up.railway.app"
 
 # -------- helpers --------
-wait_tcp() { local h="$1" p="$2" l="${3:-$h:$p}"; echo "Waiting for $l..."; until bash -lc ">/dev/tcp/$h/$p" >/dev/null 2>&1; do sleep 2; done; echo "$l is up."; }
+wait_tcp() {
+  local h="$1" p="$2" l="${3:-$h:$p}"
+  echo "Waiting for $l..."
+  until bash -lc ">/dev/tcp/$h/$p" >/dev/null 2>&1; do sleep 2; done
+  echo "$l is up."
+}
 
 # -------- wait for external services --------
 wait_tcp "$DB_HOST" "$DB_PORT" "MariaDB $DB_HOST:$DB_PORT"
 
-# -------- bench setup --------
-if [ -d "/home/frappe/frappe-bench/apps/frappe" ]; then
-  cd /home/frappe/frappe-bench
-else
+# -------- ensure bench exists (init once) --------
+if [[ ! -d "/home/frappe/frappe-bench/apps/frappe" ]]; then
   cd /home/frappe
   bench init --skip-redis-config-generation --frappe-branch version-15 frappe-bench
   cd /home/frappe/frappe-bench
 
   bench get-app --branch version-15 https://github.com/frappe/erpnext
   bench get-app --branch version-15 https://github.com/frappe/hrms
+else
+  cd /home/frappe/frappe-bench
+fi
 
-  # Point to external services
-  bench set-mariadb-host "$DB_HOST"
-  bench set-config -g db_port "$DB_PORT"
-  bench set-redis-cache-host    "$REDIS_CACHE_URL"
-  bench set-redis-queue-host    "$REDIS_QUEUE_URL"
-  bench set-redis-socketio-host "$REDIS_SOCKETIO_URL"
+# Point bench to external services (idempotent)
+bench set-mariadb-host "$DB_HOST"
+bench set-config -g db_port "$DB_PORT"
+bench set-redis-cache-host    "$REDIS_CACHE_URL"
+bench set-redis-queue-host    "$REDIS_QUEUE_URL"
+bench set-redis-socketio-host "$REDIS_SOCKETIO_URL"
+
+# -------- ALWAYS ensure the site exists --------
+if [[ ! -d "sites/${SITE_NAME}" ]]; then
+  echo "Creating site ${SITE_NAME}..."
 
   # Ensure DB exists and user has rights
   mysql --protocol=TCP -h "$DB_HOST" -P "$DB_PORT" -u "$DB_ROOT_USER" -p"$DB_ROOT_PASSWORD" <<SQL
@@ -69,16 +79,15 @@ SQL
   bench --site "$SITE_NAME" enable-scheduler
 fi
 
+# Current site and host binding
 bench use "$SITE_NAME"
-
-# Bind the Railway domain to this site to avoid 404
 bench --site "$SITE_NAME" set-config host_name "$RAILWAY_DOMAIN"
-ln -sf "sites/${SITE_NAME}" "sites/${RAILWAY_DOMAIN}"
+ln -sfn "sites/${SITE_NAME}" "sites/${RAILWAY_DOMAIN}"
 
-# Make SITE_NAME visible to Procfile command
+# Make SITE_NAME visible to Procfile line
 export SITE_NAME
 
-# Procfile: force serve this site on Railway's $PORT
+# -------- Procfile: bind to Railway $PORT and force this site --------
 cat > Procfile <<'P'
 web: bash -lc 'bench --site ${SITE_NAME} serve --port ${PORT} --noreload --nothreading'
 schedule: bench schedule
@@ -88,4 +97,5 @@ worker-long: bench worker --queue long
 socketio: node apps/frappe/socketio.js
 P
 
+# -------- start all processes --------
 exec bench start
