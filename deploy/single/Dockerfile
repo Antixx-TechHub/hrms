@@ -1,14 +1,15 @@
 FROM frappe/bench:latest
 SHELL ["/bin/bash","-lc"]
 
-# Tools required by Frappe runtime (node for socket.io, yarn)
+# Node for socket.io + yarn, and pip
 USER root
-RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      nodejs npm python3-pip \
  && npm i -g yarn \
  && rm -rf /var/lib/apt/lists/*
 
 # Bench CLI
-RUN pip install --no-cache-dir frappe-bench
+RUN python3 -m pip install --no-cache-dir frappe-bench
 
 # Pre-bake bench + apps
 USER frappe
@@ -19,7 +20,7 @@ WORKDIR /home/frappe/frappe-bench
 RUN bench get-app --branch version-15 https://github.com/frappe/erpnext && \
     bench get-app --branch version-15 https://github.com/frappe/hrms
 
-# Entrypoint (copy as root to fix perms for mounted volume later)
+# Entrypoint
 USER root
 COPY --chown=frappe:frappe init.sh /home/frappe/init.sh
 RUN chmod 0755 /home/frappe/init.sh
