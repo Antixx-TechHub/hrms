@@ -22,6 +22,8 @@ RAILWAY_DOMAIN="overflowing-harmony-production.up.railway.app"
 BENCH_DIR="/home/frappe/frappe-bench"
 SITES_DIR="$BENCH_DIR/sites"
 COMMON_CFG="$SITES_DIR/common_site_config.json"
+APPS_TXT="$SITES_DIR/apps.txt"
+CURRENT_SITE_TXT="$SITES_DIR/currentsite.txt"
 
 # ---- root phase ----
 if [[ "$(id -u)" -eq 0 && "${1:-}" != "run" ]]; then
@@ -29,11 +31,19 @@ if [[ "$(id -u)" -eq 0 && "${1:-}" != "run" ]]; then
   mkdir -p "$SITES_DIR" "$SITES_DIR/assets" "$SITES_DIR/logs"
   chown -R frappe:frappe "$SITES_DIR"
 
-  # seed valid JSON to avoid JSONDecodeError on empty file
-  if [[ ! -f "$COMMON_CFG" || ! -s "$COMMON_CFG" ]]; then
+  # seed files on empty volume
+  if [[ ! -s "$COMMON_CFG" ]]; then
     install -o frappe -g frappe -m 0644 /dev/null "$COMMON_CFG"
     printf '{}' > "$COMMON_CFG"
     chown frappe:frappe "$COMMON_CFG"
+  fi
+  if [[ ! -s "$APPS_TXT" ]]; then
+    install -o frappe -g frappe -m 0644 /dev/null "$APPS_TXT"
+    printf "frappe\nerpnext\nhrms\n" > "$APPS_TXT"
+  fi
+  if [[ ! -s "$CURRENT_SITE_TXT" ]]; then
+    install -o frappe -g frappe -m 0644 /dev/null "$CURRENT_SITE_TXT"
+    printf "%s" "$SITE_NAME" > "$CURRENT_SITE_TXT"
   fi
 
   # wait DB
@@ -57,9 +67,6 @@ if [[ -z "${BENCH_BIN}" || ! -x "${BENCH_BIN}" ]]; then
   done
 fi
 [[ -x "${BENCH_BIN:-}" ]] || { echo "bench not found"; exit 127; }
-
-# if common_site_config.json somehow empty, reseed
-if [[ ! -s "$COMMON_CFG" ]]; then printf '{}' > "$COMMON_CFG"; fi
 
 # external services
 "$BENCH_BIN" set-mariadb-host "$DB_HOST"
