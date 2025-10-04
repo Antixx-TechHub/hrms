@@ -17,6 +17,9 @@ REDIS_CACHE_URL="redis://default:TUwUwNxPhXtoaysMLvnyssapQWtRbGpz@nozomi.proxy.r
 REDIS_QUEUE_URL="redis://default:TUwUwNxPhXtoaysMLvnyssapQWtRbGpz@nozomi.proxy.rlwy.net:46645"
 REDIS_SOCKETIO_URL="redis://default:TUwUwNxPhXtoaysMLvnyssapQWtRbGpz@nozomi.proxy.rlwy.net:46645"
 
+# Your Railway domain
+RAILWAY_DOMAIN="overflowing-harmony-production.up.railway.app"
+
 # -------- helpers --------
 wait_tcp() { local h="$1" p="$2" l="${3:-$h:$p}"; echo "Waiting for $l..."; until bash -lc ">/dev/tcp/$h/$p" >/dev/null 2>&1; do sleep 2; done; echo "$l is up."; }
 
@@ -68,9 +71,16 @@ fi
 
 bench use "$SITE_NAME"
 
-# Procfile binds to Railway $PORT if present
+# Bind the Railway domain to this site to avoid 404
+bench --site "$SITE_NAME" set-config host_name "$RAILWAY_DOMAIN"
+ln -sf "sites/${SITE_NAME}" "sites/${RAILWAY_DOMAIN}"
+
+# Make SITE_NAME visible to Procfile command
+export SITE_NAME
+
+# Procfile: force serve this site on Railway's $PORT
 cat > Procfile <<'P'
-web: bench serve --port ${PORT:-8000} --noreload --nothreading
+web: bash -lc 'bench --site ${SITE_NAME} serve --port ${PORT} --noreload --nothreading'
 schedule: bench schedule
 worker-default: bench worker --queue default
 worker-short: bench worker --queue short
