@@ -1,10 +1,8 @@
 FROM frappe/bench:latest
 SHELL ["/bin/bash","-lc"]
 
-# Bench CLI
 RUN pip install --no-cache-dir frappe-bench
 
-# Pre-bake bench + apps at build
 USER frappe
 WORKDIR /home/frappe
 RUN bench init --skip-redis-config-generation --frappe-branch version-15 frappe-bench
@@ -13,7 +11,6 @@ WORKDIR /home/frappe/frappe-bench
 RUN bench get-app --branch version-15 https://github.com/frappe/erpnext && \
     bench get-app --branch version-15 https://github.com/frappe/hrms
 
-# Runtime: copy entrypoint and run as root (to fix volume perms), then drop to 'frappe'
 USER root
 COPY --chown=frappe:frappe init.sh /home/frappe/init.sh
 RUN chmod 0755 /home/frappe/init.sh
