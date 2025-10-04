@@ -1,67 +1,64 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
-# ---- Railway endpoints (public TCP) ----
-DB_HOST="trolley.proxy.rlwy.net"
-DB_PORT="51999"
-DB_NAME="railway"
-DB_USER="railway"
-DB_PASS="hfxKFQNoMagViYHTotVOpsbiQ4Rzg_l-"
+# -------- helpers --------
+wait_tcp() {
+  local host="$1" port="$2" label="${3:-$host:$port}"
+  echo "Waiting for $label..."
+  until bash -c ">/dev/tcp/$host/$port" >/dev/null 2>&1; do sleep 2; done
+  echo "$label is up."
+}
+url_host() { local u="$1"; u="${u#*@}"; echo "${u%:*}"; }   # redis://user:pass@HOST:PORT -> HOST
+url_port() { local u="$1"; echo "${u##*:}"; }               # redis://user:pass@HOST:PORT -> PORT
 
-REDIS_HOST="nozomi.proxy.rlwy.net"
-REDIS_PORT="46645"
-REDIS_USER="default"
-REDIS_PASS="TUwUwNxPhXtoaysMLvnyssapQWtRbGpz"
+# -------- required env --------
+: "${SITE_NAME:?missing}"; : "${ADMIN_PASSWORD:?missing}"
+: "${DB_HOST:?missing}"; : "${DB_PORT:?missing}"
+: "${DB_ROOT_USER:?missing}"; : "${DB_ROOT_PASSWORD:?missing}"
+: "${REDIS_CACHE_URL:?missing}"; : "${REDIS_QUEUE_URL:?missing}"; : "${REDIS_SOCKETIO_URL:?missing}"
 
-SITE="hrms.localhost"
-ADMIN_PASSWORD="admin"
+# -------- wait for external services --------
+wait_tcp "$DB_HOST" "$DB_PORT" "MariaDB $DB_HOST:$DB_PORT"
 
-cd /home/frappe/frappe-bench
+RC_HOST="$(url_host "$REDIS_CACHE_URL")";    RC_PORT="$(url_port "$REDIS_CACHE_URL")"
+RQ_HOST="$(url_host "$REDIS_QUEUE_URL")";    RQ_PORT="$(url_port "$REDIS_QUEUE_URL")"
+RS_HOST="$(url_host "$REDIS_SOCKETIO_URL")"; RS_PORT="$(url_port "$REDIS_SOCKETIO_URL")"
 
-# Force external Redis + DB before any start
-REDIS_URI="redis://${REDIS_USER}:${REDIS_PASS}@${REDIS_HOST}:${REDIS_PORT}"
-bench set-redis-cache-host    "${REDIS_URI}" || true
-bench set-redis-queue-host    "${REDIS_URI}" || true
-bench set-redis-socketio-host "${REDIS_URI}" || true
-sed -i '/^[[:space:]]*redis[[:space:]]*:/d' Procfile || true
-sed -i '/^[[:space:]]*watch[[:space:]]*:/d' Procfile || true
+wait_tcp "$RC_HOST" "$RC_PORT" "Redis cache"
+wait_tcp "$RQ_HOST" "$RQ_PORT" "Redis queue"
+wait_tcp "$RS_HOST" "$RS_PORT" "Redis socketio"
 
-bench set-config -g db_host "${DB_HOST}"
-bench set-config -g db_port "${DB_PORT}"
+# -------- bench setup --------
+if [ -d "/home/frappe/frappe-bench/apps/frappe" ]; then
+  cd /home/frappe/frappe-bench
+else
+  cd /home/frappe
+  bench init --skip-redis-config-generation --frappe-branch version-15 frappe-bench
+  cd /home/frappe/frappe-bench
 
-wait_tcp() { timeout 20 bash -c "</dev/tcp/$1/$2" >/dev/null 2>&1; }
-echo "Waiting for MariaDB ${DB_HOST}:${DB_PORT} ..."
-until wait_tcp "${DB_HOST}" "${DB_PORT}"; do sleep 2; done
-echo "Waiting for Redis ${REDIS_HOST}:${REDIS_PORT} ..."
-until wait_tcp "${REDIS_HOST}" "${REDIS_PORT}"; do sleep 2; done
+  bench get-app --branch version-15 https://github.com/frappe/erpnext
+  bench get-app --branch version-15 https://github.com/frappe/hrms
 
-# Create site if missing (use DB user, not root)
-if ! bench --site "${SITE}" version >/dev/null 2>&1; then
-  echo "Creating site ${SITE}"
-  bench new-site "${SITE}" \
+  bench set-mariadb-host "$DB_HOST"
+  bench set-redis-cache-host    "$REDIS_CACHE_URL"
+  bench set-redis-queue-host    "$REDIS_QUEUE_URL"
+  bench set-redis-socketio-host "$REDIS_SOCKETIO_URL"
+
+  bench new-site "$SITE_NAME" \
     --force \
-    --admin-password "${ADMIN_PASSWORD}" \
-    --db-name "${DB_NAME}" \
-    --db-host "${DB_HOST}" \
-    --db-port "${DB_PORT}" \
-    --db-username "${DB_USER}" \
-    --db-password "${DB_PASS}" \
-    --no-mariadb-socket
+    --admin-password "$ADMIN_PASSWORD" \
+    --db-type mariadb \
+    --db-host "$DB_HOST" \
+    --db-port "$DB_PORT" \
+    --no-mariadb-socket \
+    --mariadb-root-username "$DB_ROOT_USER" \
+    --mariadb-root-password "$DB_ROOT_PASSWORD"
 
-  bench --site "${SITE}" install-app erpnext
-  bench --site "${SITE}" install-app hrms
-  bench --site "${SITE}" set-config developer_mode 1
-  bench --site "${SITE}" enable-scheduler
-  bench --site "${SITE}" clear-cache
+  bench --site "$SITE_NAME" install-app erpnext hrms
+  bench --site "$SITE_NAME" set-config developer_mode 1
+  bench --site "$SITE_NAME" enable-scheduler
+  bench --site "$SITE_NAME" clear-cache
 fi
 
-bench use "${SITE}"
-
-# Start nginx on $PORT, then bench (web:8000, socketio:9000)
-echo "Starting nginx on port ${PORT:-8080}..."
-# nginx runs as root; elevate briefly then drop back is fine
-sudo -n true 2>/dev/null || true
-/usr/sbin/nginx -g "daemon on;"
-
-echo "Starting bench..."
-exec bench start --no-dev
+bench use "$SITE_NAME"
+exec bench start
