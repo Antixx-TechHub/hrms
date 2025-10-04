@@ -31,19 +31,9 @@ if [[ "$(id -u)" -eq 0 && "${1:-}" != "run" ]]; then
   chown -R frappe:frappe "$SITES_DIR"
 
   # seed files on empty volume
-  if [[ ! -s "$COMMON_CFG" ]]; then
-    install -o frappe -g frappe -m 0644 /dev/null "$COMMON_CFG"
-    printf '{}' > "$COMMON_CFG"
-    chown frappe:frappe "$COMMON_CFG"
-  fi
-  if [[ ! -s "$APPS_TXT" ]]; then
-    install -o frappe -g frappe -m 0644 /dev/null "$APPS_TXT"
-    printf "frappe\nerpnext\nhrms\n" > "$APPS_TXT"
-  fi
-  if [[ ! -s "$CURRENT_SITE_TXT" ]]; then
-    install -o frappe -g frappe -m 0644 /dev/null "$CURRENT_SITE_TXT"
-    printf "%s" "$SITE_NAME" > "$CURRENT_SITE_TXT"
-  fi
+  [[ -s "$COMMON_CFG" ]] || { install -o frappe -g frappe -m 0644 /dev/null "$COMMON_CFG"; printf '{}' > "$COMMON_CFG"; }
+  [[ -s "$APPS_TXT" ]] || { install -o frappe -g frappe -m 0644 /dev/null "$APPS_TXT"; printf "frappe\nerpnext\nhrms\n" > "$APPS_TXT"; }
+  [[ -s "$CURRENT_SITE_TXT" ]] || { install -o frappe -g frappe -m 0644 /dev/null "$CURRENT_SITE_TXT"; printf "%s" "$SITE_NAME" > "$CURRENT_SITE_TXT"; }
 
   echo "Waiting for MariaDB $DB_HOST:$DB_PORT..."
   until bash -lc ">/dev/tcp/$DB_HOST/$DB_PORT" >/dev/null 2>&1; do sleep 2; done
@@ -104,13 +94,22 @@ fi
 ln -sfn "sites/${SITE_NAME}" "sites/${RAILWAY_DOMAIN}"
 
 export SITE_NAME
-cat > Procfile <<'P'
-web: bash -lc 'bench --site ${SITE_NAME} serve --port ${PORT} --noreload --nothreading'
+
+# Build Procfile. Include socketio only if node exists.
+if command -v node >/dev/null 2>&1; then
+  SOCKETIO_LINE="socketio: node apps/frappe/socketio.js"
+else
+  echo "node not found; skipping socket.io"
+  SOCKETIO_LINE=""
+fi
+
+cat > Procfile <<P
+web: bash -lc 'bench --site \${SITE_NAME} serve --port \${PORT} --noreload --nothreading'
 schedule: bench schedule
 worker-default: bench worker --queue default
 worker-short: bench worker --queue short
 worker-long: bench worker --queue long
-socketio: node apps/frappe/socketio.js
+$SOCKETIO_LINE
 P
 
 exec "$BENCH_BIN" start
