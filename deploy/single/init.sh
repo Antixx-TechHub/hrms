@@ -25,7 +25,7 @@ COMMON_CFG="$SITES_DIR/common_site_config.json"
 APPS_TXT="$SITES_DIR/apps.txt"
 CURRENT_SITE_TXT="$SITES_DIR/currentsite.txt"
 
-# ---- root phase ----
+# ---- root phase: fix volume perms and seed files ----
 if [[ "$(id -u)" -eq 0 && "${1:-}" != "run" ]]; then
   mkdir -p "$SITES_DIR" "$SITES_DIR/assets" "$SITES_DIR/logs"
   chown -R frappe:frappe "$SITES_DIR"
@@ -46,23 +46,16 @@ fi
 export PATH="/usr/local/bin:/usr/bin:/bin:/home/frappe/.local/bin"
 cd "$BENCH_DIR"
 
-# locate bench
-BENCH_BIN="$(command -v bench || true)"
-if [[ -z "${BENCH_BIN}" || ! -x "${BENCH_BIN}" ]]; then
-  for c in /home/frappe/.local/bin/bench /usr/local/bin/bench /usr/bin/bench; do
-    [[ -x "$c" ]] && BENCH_BIN="$c" && break
-  done
-fi
-[[ -x "${BENCH_BIN:-}" ]] || { echo "bench not found"; exit 127; }
+BENCH_BIN="$(command -v bench)"; [[ -x "${BENCH_BIN:-}" ]] || { echo "bench not found"; exit 127; }
 
-# external services
+# External services
 "$BENCH_BIN" set-mariadb-host "$DB_HOST"
 "$BENCH_BIN" set-config -g db_port "$DB_PORT"
 "$BENCH_BIN" set-redis-cache-host    "$REDIS_CACHE_URL"
 "$BENCH_BIN" set-redis-queue-host    "$REDIS_QUEUE_URL"
 "$BENCH_BIN" set-redis-socketio-host "$REDIS_SOCKETIO_URL"
 
-# ensure site exists
+# Ensure site exists
 if [[ ! -d "sites/${SITE_NAME}" ]]; then
   echo "Creating site ${SITE_NAME}..."
   mysql --protocol=TCP -h "$DB_HOST" -P "$DB_PORT" -u "$DB_ROOT_USER" -p"$DB_ROOT_PASSWORD" <<SQL
@@ -87,14 +80,18 @@ SQL
   "$BENCH_BIN" --site "$SITE_NAME" enable-scheduler
 fi
 
-# bind host
+# Bind host and ensure prod mode
 "$BENCH_BIN" use "$SITE_NAME"
 "$BENCH_BIN" --site "$SITE_NAME" set-config host_name "$RAILWAY_DOMAIN"
+"$BENCH_BIN" --site "$SITE_NAME" set-config developer_mode 0
 ln -sfn "sites/${SITE_NAME}" "sites/${RAILWAY_DOMAIN}"
 
-# --- build assets (critical for bundled_assets) ---
-"$BENCH_BIN" build
+# No build here; already built during image build
+# Just clear cache and run DB migrations for safety
+"$BENCH_BIN" --site "$SITE_NAME" clear-cache
+"$BENCH_BIN" --site "$SITE_NAME" migrate
 
+# Procfile
 export SITE_NAME
 cat > Procfile <<'P'
 web: bash -lc 'bench --site ${SITE_NAME} serve --port ${PORT} --noreload --nothreading'
