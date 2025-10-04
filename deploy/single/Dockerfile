@@ -1,18 +1,18 @@
 FROM frappe/bench:latest
 SHELL ["/bin/bash","-lc"]
 
-# Node for socket.io + yarn, and pip
+# Node + pip
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
       nodejs npm python3-pip \
  && npm i -g yarn \
  && rm -rf /var/lib/apt/lists/*
 
-# Bench CLI
-RUN python3 -m pip install --no-cache-dir frappe-bench
+# Install bench for the frappe user (no system-wide pip)
+USER frappe
+RUN python3 -m pip install --user --no-cache-dir frappe-bench
 
 # Pre-bake bench + apps
-USER frappe
 WORKDIR /home/frappe
 RUN bench init --skip-redis-config-generation --frappe-branch version-15 frappe-bench
 
