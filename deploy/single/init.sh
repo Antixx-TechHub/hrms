@@ -27,7 +27,6 @@ CURRENT_SITE_TXT="$SITES_DIR/currentsite.txt"
 
 # ---- root phase ----
 if [[ "$(id -u)" -eq 0 && "${1:-}" != "run" ]]; then
-  # ensure mount and ownership
   mkdir -p "$SITES_DIR" "$SITES_DIR/assets" "$SITES_DIR/logs"
   chown -R frappe:frappe "$SITES_DIR"
 
@@ -46,7 +45,6 @@ if [[ "$(id -u)" -eq 0 && "${1:-}" != "run" ]]; then
     printf "%s" "$SITE_NAME" > "$CURRENT_SITE_TXT"
   fi
 
-  # wait DB
   echo "Waiting for MariaDB $DB_HOST:$DB_PORT..."
   until bash -lc ">/dev/tcp/$DB_HOST/$DB_PORT" >/dev/null 2>&1; do sleep 2; done
   echo "MariaDB $DB_HOST:$DB_PORT is up."
@@ -91,7 +89,6 @@ SQL
     --db-host "$DB_HOST" \
     --db-port "$DB_PORT" \
     --db-name "$DB_NAME" \
-    --db-username "$DB_USER" \
     --db-password "$DB_PASSWORD" \
     --no-mariadb-socket \
     --mariadb-root-username "$DB_ROOT_USER" \
