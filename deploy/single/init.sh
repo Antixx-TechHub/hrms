@@ -21,35 +21,44 @@ RAILWAY_DOMAIN="overflowing-harmony-production.up.railway.app"
 
 BENCH_DIR="/home/frappe/frappe-bench"
 SITES_DIR="$BENCH_DIR/sites"
-BENCH_BIN="/usr/local/bin/bench"   # absolute path avoids PATH issues
 
-# ---------- root phase ----------
+# ---- root phase ----
 if [[ "$(id -u)" -eq 0 && "${1:-}" != "run" ]]; then
-  # Ensure volume is writable by 'frappe'
   mkdir -p "$SITES_DIR" "$SITES_DIR/assets" "$SITES_DIR/logs"
   chown -R frappe:frappe "$SITES_DIR"
 
-  # Wait for DB
   echo "Waiting for MariaDB $DB_HOST:$DB_PORT..."
   until bash -lc ">/dev/tcp/$DB_HOST/$DB_PORT" >/dev/null 2>&1; do sleep 2; done
   echo "MariaDB $DB_HOST:$DB_PORT is up."
 
-  # Preserve PATH for frappe and execute run phase
+  # Preserve PATH for frappe
   export PATH="/usr/local/bin:/usr/bin:/bin:/home/frappe/.local/bin"
   exec su -s /bin/bash -c "/home/frappe/init.sh run" frappe
 fi
 
-# ---------- frappe phase ----------
+# ---- frappe phase ----
+export PATH="/usr/local/bin:/usr/bin:/bin:/home/frappe/.local/bin"
 cd "$BENCH_DIR"
 
-# Point bench to external services (idempotent)
+# locate bench
+BENCH_BIN="$(command -v bench || true)"
+if [[ -z "${BENCH_BIN}" || ! -x "${BENCH_BIN}" ]]; then
+  for c in /home/frappe/.local/bin/bench /usr/local/bin/bench /usr/bin/bench; do
+    [[ -x "$c" ]] && BENCH_BIN="$c" && break
+  done
+fi
+if [[ -z "${BENCH_BIN}" || ! -x "${BENCH_BIN}" ]]; then
+  echo "bench not found in PATH"; exit 127
+fi
+
+# point bench to external services
 "$BENCH_BIN" set-mariadb-host "$DB_HOST"
 "$BENCH_BIN" set-config -g db_port "$DB_PORT"
 "$BENCH_BIN" set-redis-cache-host    "$REDIS_CACHE_URL"
 "$BENCH_BIN" set-redis-queue-host    "$REDIS_QUEUE_URL"
 "$BENCH_BIN" set-redis-socketio-host "$REDIS_SOCKETIO_URL"
 
-# Ensure the site exists
+# ensure the site exists
 if [[ ! -d "sites/${SITE_NAME}" ]]; then
   echo "Creating site ${SITE_NAME}..."
   mysql --protocol=TCP -h "$DB_HOST" -P "$DB_PORT" -u "$DB_ROOT_USER" -p"$DB_ROOT_PASSWORD" <<SQL
@@ -75,7 +84,7 @@ SQL
   "$BENCH_BIN" --site "$SITE_NAME" enable-scheduler
 fi
 
-# Bind host and force site on $PORT
+# bind host and force site on $PORT
 "$BENCH_BIN" use "$SITE_NAME"
 "$BENCH_BIN" --site "$SITE_NAME" set-config host_name "$RAILWAY_DOMAIN"
 ln -sfn "sites/${SITE_NAME}" "sites/${RAILWAY_DOMAIN}"
