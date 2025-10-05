@@ -46,7 +46,7 @@ fi
 export PATH="/usr/local/bin:/usr/bin:/bin:/home/frappe/.local/bin"
 cd "$BENCH_DIR"
 
-# locate bench
+# bench path
 BENCH_BIN="$(command -v bench || true)"
 if [[ -z "${BENCH_BIN}" || ! -x "${BENCH_BIN}" ]]; then
   for c in /home/frappe/.local/bin/bench /usr/local/bin/bench /usr/bin/bench; do
@@ -90,29 +90,26 @@ fi
 # bind host
 "$BENCH_BIN" use "$SITE_NAME"
 "$BENCH_BIN" --site "$SITE_NAME" set-config host_name "$RAILWAY_DOMAIN"
+"$BENCH_BIN" --site "$SITE_NAME" set-config developer_mode 0
 ln -sfn "sites/${SITE_NAME}" "sites/${RAILWAY_DOMAIN}"
 
-# --- build assets on the mounted volume if missing ---
+# --- build assets on mounted volume (skip HRMS frontend) ---
 NEED_BUILD=0
-[[ ! -s "sites/assets/.build" ]] && NEED_BUILD=1
-[[ ! -f "sites/assets/assets.json" ]] && NEED_BUILD=1
+[[ ! -s "sites/assets/assets.json" ]] && NEED_BUILD=1
 shopt -s nullglob
 css_count=(sites/assets/**/*.css); js_count=(sites/assets/**/*.js)
 [[ ${#css_count[@]} -eq 0 || ${#js_count[@]} -eq 0 ]] && NEED_BUILD=1
 shopt -u nullglob
-
 if [[ $NEED_BUILD -eq 1 ]]; then
-  echo "Building assets on mounted volume..."
-  "$BENCH_BIN" build --production
-  date > sites/assets/.build
+  echo "Building frappe + erpnext assets..."
+  "$BENCH_BIN" build --apps frappe erpnext --production
 fi
 
-# safety: migrate + clear cache
+# safety
 "$BENCH_BIN" --site "$SITE_NAME" migrate
 "$BENCH_BIN" --site "$SITE_NAME" clear-cache
 
 export SITE_NAME
-# Procfile (socketio will work since node is installed in image)
 cat > Procfile <<'P'
 web: bash -lc 'bench --site ${SITE_NAME} serve --port ${PORT} --noreload --nothreading'
 schedule: bench schedule
