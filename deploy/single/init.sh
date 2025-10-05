@@ -46,7 +46,7 @@ fi
 export PATH="/usr/local/bin:/usr/bin:/bin:/home/frappe/.local/bin"
 cd "$BENCH_DIR"
 
-# bench path
+# locate bench
 BENCH_BIN="$(command -v bench || true)"
 if [[ -z "${BENCH_BIN}" || ! -x "${BENCH_BIN}" ]]; then
   for c in /home/frappe/.local/bin/bench /usr/local/bin/bench /usr/bin/bench; do
@@ -93,7 +93,7 @@ fi
 "$BENCH_BIN" --site "$SITE_NAME" set-config developer_mode 0
 ln -sfn "sites/${SITE_NAME}" "sites/${RAILWAY_DOMAIN}"
 
-# --- build assets on mounted volume (skip HRMS frontend) ---
+# --- build assets on mounted volume (skip HRMS frontend that breaks vite) ---
 NEED_BUILD=0
 [[ ! -s "sites/assets/assets.json" ]] && NEED_BUILD=1
 shopt -s nullglob
@@ -102,7 +102,10 @@ css_count=(sites/assets/**/*.css); js_count=(sites/assets/**/*.js)
 shopt -u nullglob
 if [[ $NEED_BUILD -eq 1 ]]; then
   echo "Building frappe + erpnext assets..."
-  "$BENCH_BIN" build --apps frappe erpnext --production
+  "$BENCH_BIN" build --apps "frappe,erpnext" --production || {
+    echo "Partial build failed, attempting full build"
+    "$BENCH_BIN" build --production || true
+  }
 fi
 
 # safety
