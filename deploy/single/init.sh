@@ -25,7 +25,7 @@ COMMON_CFG="$SITES_DIR/common_site_config.json"
 APPS_TXT="$SITES_DIR/apps.txt"
 CURRENT_SITE_TXT="$SITES_DIR/currentsite.txt"
 
-# ---- root phase: fix volume perms and seed files ----
+# ---- root phase ----
 if [[ "$(id -u)" -eq 0 && "${1:-}" != "run" ]]; then
   mkdir -p "$SITES_DIR" "$SITES_DIR/assets" "$SITES_DIR/logs"
   chown -R frappe:frappe "$SITES_DIR"
@@ -46,16 +46,23 @@ fi
 export PATH="/usr/local/bin:/usr/bin:/bin:/home/frappe/.local/bin"
 cd "$BENCH_DIR"
 
-BENCH_BIN="$(command -v bench)"; [[ -x "${BENCH_BIN:-}" ]] || { echo "bench not found"; exit 127; }
+# locate bench
+BENCH_BIN="$(command -v bench || true)"
+if [[ -z "${BENCH_BIN}" || ! -x "${BENCH_BIN}" ]]; then
+  for c in /home/frappe/.local/bin/bench /usr/local/bin/bench /usr/bin/bench; do
+    [[ -x "$c" ]] && BENCH_BIN="$c" && break
+  done
+fi
+[[ -x "${BENCH_BIN:-}" ]] || { echo "bench not found"; exit 127; }
 
-# External services
+# external services
 "$BENCH_BIN" set-mariadb-host "$DB_HOST"
 "$BENCH_BIN" set-config -g db_port "$DB_PORT"
 "$BENCH_BIN" set-redis-cache-host    "$REDIS_CACHE_URL"
 "$BENCH_BIN" set-redis-queue-host    "$REDIS_QUEUE_URL"
 "$BENCH_BIN" set-redis-socketio-host "$REDIS_SOCKETIO_URL"
 
-# Ensure site exists
+# ensure site exists
 if [[ ! -d "sites/${SITE_NAME}" ]]; then
   echo "Creating site ${SITE_NAME}..."
   mysql --protocol=TCP -h "$DB_HOST" -P "$DB_PORT" -u "$DB_ROOT_USER" -p"$DB_ROOT_PASSWORD" <<SQL
@@ -80,19 +87,32 @@ SQL
   "$BENCH_BIN" --site "$SITE_NAME" enable-scheduler
 fi
 
-# Bind host and ensure prod mode
+# bind host
 "$BENCH_BIN" use "$SITE_NAME"
 "$BENCH_BIN" --site "$SITE_NAME" set-config host_name "$RAILWAY_DOMAIN"
-"$BENCH_BIN" --site "$SITE_NAME" set-config developer_mode 0
 ln -sfn "sites/${SITE_NAME}" "sites/${RAILWAY_DOMAIN}"
 
-# No build here; already built during image build
-# Just clear cache and run DB migrations for safety
-"$BENCH_BIN" --site "$SITE_NAME" clear-cache
-"$BENCH_BIN" --site "$SITE_NAME" migrate
+# --- build assets on the mounted volume if missing ---
+NEED_BUILD=0
+[[ ! -s "sites/assets/.build" ]] && NEED_BUILD=1
+[[ ! -f "sites/assets/assets.json" ]] && NEED_BUILD=1
+shopt -s nullglob
+css_count=(sites/assets/**/*.css); js_count=(sites/assets/**/*.js)
+[[ ${#css_count[@]} -eq 0 || ${#js_count[@]} -eq 0 ]] && NEED_BUILD=1
+shopt -u nullglob
 
-# Procfile
+if [[ $NEED_BUILD -eq 1 ]]; then
+  echo "Building assets on mounted volume..."
+  "$BENCH_BIN" build --production
+  date > sites/assets/.build
+fi
+
+# safety: migrate + clear cache
+"$BENCH_BIN" --site "$SITE_NAME" migrate
+"$BENCH_BIN" --site "$SITE_NAME" clear-cache
+
 export SITE_NAME
+# Procfile (socketio will work since node is installed in image)
 cat > Procfile <<'P'
 web: bash -lc 'bench --site ${SITE_NAME} serve --port ${PORT} --noreload --nothreading'
 schedule: bench schedule
